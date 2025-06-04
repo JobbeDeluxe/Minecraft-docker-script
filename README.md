@@ -25,7 +25,7 @@ Dieses Bash-Skript automatisiert den Update-Prozess eines Minecraft-Servers im D
 1. Skript ausführen:
 
    ```bash
-   bash update_server_neu3.bash
+   bash start_minecraft.sh
    ```
 
 2. Interaktive Abfragen beantworten:
