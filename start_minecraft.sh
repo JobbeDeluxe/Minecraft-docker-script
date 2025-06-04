@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Globale Variablen
+read -p "Pfad zum Minecraft-Datenverzeichnis (Standard: /opt/minecraft_server): " DATA_DIR
+DATA_DIR="${DATA_DIR:-/opt/minecraft_server}"
 SERVER_NAME="mc"
-DATA_DIR="/media/jobbe/big/Fertig/minecraft_docker"
 BACKUP_DIR="${DATA_DIR}/backups"
 PLUGIN_DIR="${DATA_DIR}/plugins"
 PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
