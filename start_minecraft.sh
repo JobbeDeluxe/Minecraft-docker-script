@@ -258,8 +258,7 @@ main() {
     if [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
         update_plugins
     else
-    [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
-        delete_and_backup_plugins
+        [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && delete_and_backup_plugins
     fi
     [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
 
