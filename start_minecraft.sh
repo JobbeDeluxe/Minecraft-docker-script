@@ -257,7 +257,8 @@ main() {
     [[ "$DO_RESTORE" =~ ^(ja|j|yes|y)$ ]] && restore_backup
     if [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
         update_plugins
-    elif [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
+    else
+    [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
         delete_and_backup_plugins
     fi
     [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
