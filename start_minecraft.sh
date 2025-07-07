@@ -255,7 +255,11 @@ main() {
 
     [[ "$DO_BACKUP" =~ ^(ja|j|yes|y)$ ]] && create_backup
     [[ "$DO_RESTORE" =~ ^(ja|j|yes|y)$ ]] && restore_backup
-    [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && update_plugins || [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && delete_and_backup_plugins
+    if [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
+        update_plugins
+    elif [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
+        delete_and_backup_plugins
+    fi
     [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
 
     log "Update-Prozess abgeschlossen."
