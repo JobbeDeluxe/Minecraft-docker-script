@@ -235,4 +235,15 @@ main() {
     read -p "Soll ein Backup erstellt werden? (ja/nein): " DO_BACKUP
     read -p "Soll ein Backup wiederhergestellt werden? (ja/nein): " DO_RESTORE
     read -p "Sollen die Plugins aktualisiert werden? (ja/nein): " DO_UPDATE_PLUGINS
-    read -p "Sollen die aktuellen Plugins gelöscht und gesichert werden? (ja/nein): " DO
+    read -p "Sollen die aktuellen Plugins gelöscht und gesichert werden? (ja/nein): " DO_DELETE_PLUGINS
+    read -p "Soll der Docker-Container gestartet werden? (ja/nein): " DO_START_DOCKER
+
+    [[ "$DO_BACKUP" =~ ^(ja|j|yes|y)$ ]] && create_backup
+    [[ "$DO_RESTORE" =~ ^(ja|j|yes|y)$ ]] && restore_backup
+    [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && update_plugins || [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && delete_and_backup_plugins
+    [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
+
+    log "Update-Prozess abgeschlossen."
+}
+
+main
