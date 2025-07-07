@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# Globale Variablen
+# === Minecraft Docker Update- und Restore-Skript ===
+
+# === Pfad abfragen ===
 read -p "Pfad zum Minecraft-Datenverzeichnis (Standard: /opt/minecraft_server): " DATA_DIR
 DATA_DIR="${DATA_DIR:-/opt/minecraft_server}"
 SERVER_NAME="mc"
@@ -10,19 +12,16 @@ PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
 DOCKER_IMAGE="itzg/minecraft-server"
 LOG_FILE="${DATA_DIR}/update_log.txt"
 
-# Logging
 log() {
     printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
 }
 
-# Signal-Handler
 cleanup() {
     log "Script wurde abgebrochen."
     exit 1
 }
 trap cleanup SIGINT SIGTERM
 
-# Funktion: Abhängigkeiten prüfen
 check_dependencies() {
     local deps=("docker" "jq" "curl" "wget")
     for dep in "${deps[@]}"; do
@@ -33,7 +32,6 @@ check_dependencies() {
     done
 }
 
-# Funktion: Server stoppen
 stop_server() {
     log "Stoppe Server..."
     docker stop "$SERVER_NAME" || {
@@ -42,7 +40,6 @@ stop_server() {
     }
 }
 
-# Funktion: Server starten
 start_server() {
     log "Starte Server..."
     docker start "$SERVER_NAME" || {
@@ -51,22 +48,16 @@ start_server() {
     }
 }
 
-# Funktion: Backup erstellen
-# Funktion: Backup erstellen
 create_backup() {
     stop_server || return 1
     log "Erstelle Backup..."
     mkdir -p "$BACKUP_DIR"
-
     local backup_name="backup_$(date +%Y%m%d%H%M)"
     local backup_file="$BACKUP_DIR/$backup_name.tar.gz"
-
     log "Starte Backup nach $backup_file..."
     local start_time=$(date +%s)
-
     tar --exclude="./backups" -czf "$backup_file" -C "$DATA_DIR" . &
     local pid=$!
-
     while kill -0 $pid 2> /dev/null; do
         sleep 5
         local current_size=$(du -sh "$backup_file" 2>/dev/null | awk '{print $1}')
@@ -75,7 +66,6 @@ create_backup() {
         local elapsed_seconds=$((elapsed_time % 60))
         log "Backup läuft: Größe=$current_size, verstrichene Zeit=${elapsed_minutes}m ${elapsed_seconds}s"
     done
-
     if wait $pid; then
         local final_size=$(du -sh "$backup_file" | awk '{print $1}')
         local total_time=$(( $(date +%s) - start_time ))
@@ -86,32 +76,22 @@ create_backup() {
         log "Fehler beim Erstellen des Backups." >&2
         return 1
     fi
-
-    if [[ "$DO_START_DOCKER" =~ ^[nN](ein)?$ ]]; then
-        start_server || return 1
-    fi
+    [[ "$DO_START_DOCKER" =~ ^[nN](ein)?$ ]] && start_server || true
 }
 
-# Funktion: Plugins löschen und sichern
 delete_and_backup_plugins() {
     log "Sichere bestehende Plugins nach ${PLUGIN_DIR}/old_version"
     mkdir -p "${PLUGIN_DIR}/old_version"
     timestamp=$(date +%Y%m%d_%H%M%S)
-
-    # Alte JARs und plugins.txt verschieben
     find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -exec mv -v {} "${PLUGIN_DIR}/old_version/" \; | tee -a "$LOG_FILE"
-    if [[ -f "$PLUGIN_CONFIG" ]]; then
-        cp -v "$PLUGIN_CONFIG" "${PLUGIN_DIR}/old_version/plugins_$timestamp.txt" | tee -a "$LOG_FILE"
-    fi
+    [[ -f "$PLUGIN_CONFIG" ]] && cp -v "$PLUGIN_CONFIG" "${PLUGIN_DIR}/old_version/plugins_$timestamp.txt" | tee -a "$LOG_FILE"
     log "Alte Plugins wurden gesichert."
 }
 
-# Funktion: Plugins aktualisieren
 update_plugins() {
     log "Aktualisiere Plugins..."
     mkdir -p "$PLUGIN_DIR"
-
-    if [[ ! -f "$PLUGIN_CONFIG" ]]; then
+    [[ ! -f "$PLUGIN_CONFIG" ]] && {
         log "Fehler: plugins.txt nicht gefunden! Erstelle Vorlage."
         cat <<EOL > "$PLUGIN_CONFIG"
 # Format: <Plugin-Name> <Download-URL>
@@ -119,8 +99,7 @@ update_plugins() {
 # ViaVersion https://github.com/ViaVersion/ViaVersion/releases/latest
 EOL
         return 1
-    fi
-
+    }
     local temp_dir="${PLUGIN_DIR}_temp"
     rm -rf "$temp_dir" && mkdir -p "$temp_dir"
 
@@ -128,7 +107,6 @@ EOL
         log "FEHLER: $1"
         log "URL: $2"
         log "Versuchter Speicherort: $3"
-        log "Versuche direkten Download ohne GitHub API..."
         wget --tries=3 --timeout=30 -q -O "$3" "$2" || {
             log "SCHWERER FEHLER: Download gescheitert für $1"
             return 1
@@ -140,7 +118,6 @@ EOL
         plugin_name=$(echo "$line" | awk '{$NF=""; sub(/[ \t]+$/, ""); print}')
         plugin_url=$(echo "$line" | awk '{print $NF}')
         log "Verarbeite: $plugin_name (${plugin_url})"
-
         if [[ "$plugin_url" == *"github.com"* ]]; then
             owner_repo=$(echo "$plugin_url" | awk -F'/' '{i=NF; while($i != "releases" && i>0) i--; print $(i-2)"/"$(i-1)}')
             [[ -z "$owner_repo" ]] && continue
@@ -151,7 +128,6 @@ EOL
             }
             asset_url=$(echo "$api_response" | jq -r '.assets[] | select(.name | test(".*.jar$")) | .browser_download_url' | head -1)
             [[ -z "$asset_url" ]] && asset_url=$(echo "$api_response" | jq -r '.zipball_url // empty')
-
             wget --tries=3 --timeout=30 -q -O "${temp_dir}/${plugin_name}.jar" "$asset_url" || {
                 handle_download_error "$plugin_name" "$plugin_url" "${temp_dir}/${plugin_name}.jar"
                 continue
@@ -175,12 +151,44 @@ EOL
 
     log "Kopiere neue Plugins..."
     cp -v "$temp_dir"/*.jar "$PLUGIN_DIR/" | tee -a "$LOG_FILE"
-
     rm -rf "$temp_dir"
     log "Plugin-Update komplett"
 }
 
-# Funktion: Docker aktualisieren
+restore_backup() {
+    log "Starte Wiederherstellung eines Backups..."
+    [[ ! -d "$BACKUP_DIR" ]] && { log "Kein Backup-Verzeichnis gefunden."; return 1; }
+
+    local backups=()
+    while IFS= read -r -d '' file; do backups+=("$file"); done < <(find "$BACKUP_DIR" -maxdepth 1 -name "*.tar.gz" -print0 | sort -z)
+
+    [[ ${#backups[@]} -eq 0 ]] && { log "Keine Backups gefunden."; return 1; }
+
+    log "Verfügbare Backups:"
+    local i=1
+    for backup in "${backups[@]}"; do
+        local name=$(basename "$backup")
+        local timestamp=$(echo "$name" | grep -oP '\\d{12}')
+        local age=$(( ( $(date +%s) - $(date -d "${timestamp:0:8} ${timestamp:8:2}:${timestamp:10:2}" +%s) ) / 86400 ))
+        echo " [$i] $name (${age} Tage alt)"
+        ((i++))
+    done
+    echo " [0] Abbrechen"
+
+    read -p "Nummer wählen: " selection
+    [[ "$selection" == "0" ]] && { log "Abgebrochen."; return 0; }
+    (( selection < 1 || selection > ${#backups[@]} )) && { log "Ungültige Auswahl."; return 1; }
+
+    local selected="${backups[$((selection - 1))]}"
+    stop_server || return 1
+    log "Leere Plugin-Verzeichnis..."
+    find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -delete
+    log "Wiederherstellung von $(basename "$selected")..."
+    tar -xzf "$selected" -C "$DATA_DIR"
+    log "Backup wiederhergestellt."
+    [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && start_server || true
+}
+
 update_docker() {
     stop_server || return 1
     log "Entferne alten Docker-Container..."
@@ -188,60 +196,37 @@ update_docker() {
         log "Fehler: Konnte Docker-Container nicht entfernen." >&2
         return 1
     }
-
     log "Starte neuen Docker-Container..."
-    local docker_args=(
-        -d -p 25565:25565 -p 19132:19132/udp
-        -v "${DATA_DIR}:/data"
-        --name "$SERVER_NAME"
-        -e TZ=Europe/Berlin
-        -e EULA=TRUE
-        -e MEMORY="$MEMORY"
-        -e TYPE="$TYPE"
-        --restart always
-    )
-    [[ -n "$VERSION" ]] && docker_args+=(-e "VERSION=$VERSION")
-
-    docker run "${docker_args[@]}" "$DOCKER_IMAGE" || {
-        log "Fehler: Neuer Docker-Container konnte nicht gestartet werden." >&2
+    local args=(-d -p 25565:25565 -p 19132:19132/udp -v "${DATA_DIR}:/data" --name "$SERVER_NAME" -e TZ=Europe/Berlin -e EULA=TRUE -e MEMORY="$MEMORY" -e TYPE="$TYPE" --restart always)
+    [[ -n "$VERSION" ]] && args+=(-e "VERSION=$VERSION")
+    docker run "${args[@]}" "$DOCKER_IMAGE" || {
+        log "Fehler: Docker-Start fehlgeschlagen." >&2
         return 1
     }
     log "Neuer Docker-Container gestartet."
 }
 
-# Hauptfunktion
 main() {
     log "Starte Update-Prozess..."
-
     shopt -s nocasematch
     check_dependencies
-
     read -p "Welche Minecraft-Version soll gestartet werden (Standard: LATEST)? " VERSION
     VERSION=${VERSION:-LATEST}
-
     read -p "Wieviel RAM soll der Server verwenden? (Standard: 6G): " MEMORY
     MEMORY=${MEMORY:-6G}
-
     read -p "Welcher Server-Typ soll verwendet werden? (Standard: PAPER): " TYPE
     TYPE=${TYPE:-PAPER}
-
     read -p "Soll ein Backup erstellt werden? (ja/nein): " DO_BACKUP
+    read -p "Soll ein Backup wiederhergestellt werden? (ja/nein): " DO_RESTORE
     read -p "Sollen die Plugins aktualisiert werden? (ja/nein): " DO_UPDATE_PLUGINS
-	read -p "Sollen die aktuellen Plugins gelöscht und in old_version gesichert werden? (ja/nein): " DO_DELETE_PLUGINS
+    read -p "Sollen die aktuellen Plugins gelöscht und gesichert werden? (ja/nein): " DO_DELETE_PLUGINS
     read -p "Soll der Docker-Container gestartet werden? (ja/nein): " DO_START_DOCKER
-	
+
     [[ "$DO_BACKUP" =~ ^(ja|j|yes|y)$ ]] && create_backup
-
-    if [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
-        update_plugins
-    else
-        [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && delete_and_backup_plugins
-    fi
-
+    [[ "$DO_RESTORE" =~ ^(ja|j|yes|y)$ ]] && restore_backup
+    [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && update_plugins || [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && delete_and_backup_plugins
     [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
-
     log "Update-Prozess abgeschlossen."
 }
 
-# Skript starten
 main
