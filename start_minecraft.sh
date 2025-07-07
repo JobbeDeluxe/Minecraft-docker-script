@@ -223,8 +223,23 @@ main() {
     shopt -s nocasematch
     check_dependencies
 
-    read -p "Soll ein neuer Server initialisiert werden? (ja/nein): " DO_INIT
-    [[ "$DO_INIT" =~ ^(ja|j|yes|y)$ ]] && initialize_new_server
+       read -p "Soll ein neuer Server initialisiert werden? (ja/nein): " DO_INIT
+    if [[ "$DO_INIT" =~ ^(ja|j|yes|y)$ ]]; then
+        echo "ACHTUNG: Dies wird ALLE Daten löschen, inklusive Plugins, Welten und Konfigurationen!"
+        read -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
+        if [[ "$CONFIRM_INIT" =~ ^(ja|j|yes|y)$ ]]; then
+            log "Erstelle vor der Initialisierung ein Backup..."
+            create_backup || {
+                log "Backup fehlgeschlagen. Abbruch der Initialisierung."
+                exit 1
+            }
+            initialize_new_server
+        else
+            log "Initialisierung abgebrochen."
+            exit 0
+        fi
+    fi
+
 
     read -p "Welche Minecraft-Version soll gestartet werden (Standard: LATEST)? " VERSION
     VERSION=${VERSION:-LATEST}
