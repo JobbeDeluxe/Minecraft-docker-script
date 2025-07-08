@@ -12,7 +12,7 @@ CONFIG_FILE="/home/$ACTUAL_USER/.mc_docker_helper.conf"
 declare -A CONFIG
 
 load_config() {
-    if [[ -f "$CONFIG_FILE" ]]; then
+    if [[ -f "$CONFIG_FILE" && -r "$CONFIG_FILE" ]]; then
         while IFS='=' read -r key value; do
             [[ $key && $value ]] && CONFIG[$key]="$value"
         done < "$CONFIG_FILE"
@@ -24,6 +24,8 @@ load_config
 
 DATA_DIR_DEFAULT="/opt/minecraft_server"
 DATA_DIR_PROMPT="Pfad zum Minecraft-Datenverzeichnis"
+
+# Hier den Standardwert aus der Konfiguration setzen
 DATA_DIR="${CONFIG[DATA_DIR]:-$DATA_DIR_DEFAULT}"
 
 read_with_suggestion() {
