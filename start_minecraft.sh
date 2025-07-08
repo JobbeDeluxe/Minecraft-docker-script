@@ -1,7 +1,14 @@
 #!/bin/bash
 
 # === Minecraft Docker Update-, Backup- und Restore-Skript ===
-CONFIG_FILE="$HOME/.mc_docker_helper.conf"
+
+# Bestimme den richtigen Benutzer für die Konfigurationsdatei
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+else
+    ACTUAL_USER="$USER"
+fi
+CONFIG_FILE="/home/$ACTUAL_USER/.mc_docker_helper.conf"
 declare -A CONFIG
 
 load_config() {
@@ -248,9 +255,16 @@ update_docker() {
 }
 
 save_config() {
+    # Sicherstellen, dass das Verzeichnis existiert
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    
+    # Konfiguration speichern
     for key in "${!CONFIG[@]}"; do
         echo "$key=${CONFIG[$key]}"
     done > "$CONFIG_FILE"
+    
+    # Berechtigungen anpassen
+    chown "$ACTUAL_USER":"$ACTUAL_USER" "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 }
 
