@@ -12,7 +12,7 @@ load_config() {
     fi
 }
 
-# === Pfad abfragen mit gespeicherten Vorschlägen ===
+# === Initialisierung ===
 load_config
 
 DATA_DIR_DEFAULT="/opt/minecraft_server"
@@ -33,16 +33,16 @@ read_with_suggestion() {
     echo "$input"
 }
 
-# === Restliche Variablen ===
+# === Restliche Variablen (werden später gesetzt) ===
 SERVER_NAME="mc"
-BACKUP_DIR="${DATA_DIR}/backups"
-PLUGIN_DIR="${DATA_DIR}/plugins"
-PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
 DOCKER_IMAGE="itzg/minecraft-server"
-LOG_FILE="${DATA_DIR}/update_log.txt"
 
 log() {
-    printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
+    if [[ -z "$LOG_FILE" ]]; then
+        printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
+    else
+        printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
+    fi
 }
 
 cleanup() {
@@ -251,15 +251,26 @@ save_config() {
     for key in "${!CONFIG[@]}"; do
         echo "$key=${CONFIG[$key]}"
     done > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
 }
 
 main() {
+    # DATA_DIR zuerst sicherstellen
+    DATA_DIR=$(read_with_suggestion "DATA_DIR" "$DATA_DIR_PROMPT" "$DATA_DIR_DEFAULT")
+    mkdir -p "$DATA_DIR"
+    
+    # Jetzt Logfile und andere Pfade setzen
+    LOG_FILE="${DATA_DIR}/update_log.txt"
+    BACKUP_DIR="${DATA_DIR}/backups"
+    PLUGIN_DIR="${DATA_DIR}/plugins"
+    PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
+    
+    # Abhängige Verzeichnisse erstellen
+    mkdir -p "$BACKUP_DIR" "$PLUGIN_DIR"
+
     log "Starte Update-Prozess..."
     shopt -s nocasematch
     check_dependencies
-
-    # DATA_DIR wurde bereits geladen, aber wir fragen nochmal ab für Bestätigung
-    DATA_DIR=$(read_with_suggestion "DATA_DIR" "$DATA_DIR_PROMPT" "$DATA_DIR_DEFAULT")
 
     read -p "Soll ein neuer Server initialisiert werden? (ja/nein): " DO_INIT
     if [[ "$DO_INIT" =~ ^(ja|j|yes|y)$ ]]; then
@@ -278,7 +289,7 @@ main() {
         fi
     fi
 
-    # Abfragen mit Vorschlägen und festen Standardwerten
+    # Abfragen mit Vorschlägen
     VERSION=$(read_with_suggestion "VERSION" "Welche Minecraft-Version soll gestartet werden" "LATEST")
     MEMORY=$(read_with_suggestion "MEMORY" "Wieviel RAM soll der Server verwenden" "6G")
     TYPE=$(read_with_suggestion "TYPE" "Welcher Server-Typ soll verwendet werden" "PAPER")
