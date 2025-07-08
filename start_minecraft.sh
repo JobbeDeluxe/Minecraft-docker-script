@@ -2,56 +2,91 @@
 
 # === Minecraft Docker Update-, Backup- und Restore-Skript ===
 
-# Bestimme den richtigen Benutzer für die Konfigurationsdatei
-if [ -n "$SUDO_USER" ]; then
-    ACTUAL_USER="$SUDO_USER"
-else
-    ACTUAL_USER="$USER"
-fi
-CONFIG_FILE="/home/$ACTUAL_USER/.mc_docker_helper.conf"
-declare -A CONFIG
+# Datei für die letzten Eingaben
+LAST_INPUTS_FILE="$HOME/.minecraft_script_inputs"
 
-load_config() {
-    if [[ -f "$CONFIG_FILE" && -r "$CONFIG_FILE" ]]; then
-        while IFS='=' read -r key value; do
-            [[ $key && $value ]] && CONFIG[$key]="$value"
-        done < "$CONFIG_FILE"
+# Funktion zum Laden der letzten Eingaben
+load_last_inputs() {
+    if [[ -f "$LAST_INPUTS_FILE" ]]; then
+        source "$LAST_INPUTS_FILE"
     fi
 }
 
-# === Initialisierung ===
-load_config
-
-DATA_DIR_DEFAULT="/opt/minecraft_server"
-DATA_DIR_PROMPT="Pfad zum Minecraft-Datenverzeichnis"
-
-# Hier den Standardwert aus der Konfiguration setzen
-DATA_DIR="${CONFIG[DATA_DIR]:-$DATA_DIR_DEFAULT}"
-
-read_with_suggestion() {
-    local key="$1"
-    local prompt="$2"
-    local default="$3"
-    
-    local suggestion="${CONFIG[$key]:-$default}"
-    local prompt_text="$prompt (Standard: $suggestion): "
-    
-    read -p "$prompt_text" input
-    input="${input:-$suggestion}"
-    CONFIG[$key]="$input"
-    echo "$input"
+# Funktion zum Speichern der aktuellen Eingaben
+save_current_inputs() {
+    cat > "$LAST_INPUTS_FILE" << EOF
+LAST_DATA_DIR="$DATA_DIR"
+LAST_VERSION="$VERSION"
+LAST_MEMORY="$MEMORY"
+LAST_TYPE="$TYPE"
+LAST_DO_INIT="$DO_INIT"
+LAST_DO_BACKUP="$DO_BACKUP"
+LAST_DO_RESTORE="$DO_RESTORE"
+LAST_DO_UPDATE_PLUGINS="$DO_UPDATE_PLUGINS"
+LAST_DO_DELETE_PLUGINS="$DO_DELETE_PLUGINS"
+LAST_DO_START_DOCKER="$DO_START_DOCKER"
+EOF
 }
 
-# === Restliche Variablen (werden später gesetzt) ===
+# Funktion für erweiterte Eingabe mit Vorschlag
+read_with_suggestion() {
+    local prompt="$1"
+    local default_value="$2"
+    local last_value="$3"
+    local user_input
+    
+    if [[ -n "$last_value" && "$last_value" != "$default_value" ]]; then
+        echo -n "$prompt [Standard: $default_value, Letzter Wert: $last_value]: "
+    else
+        echo -n "$prompt [Standard: $default_value]: "
+    fi
+    
+    read user_input
+    
+    # Wenn leer, dann Standard verwenden
+    if [[ -z "$user_input" ]]; then
+        echo "$default_value"
+    else
+        echo "$user_input"
+    fi
+}
+
+# Funktion für Ja/Nein-Eingabe mit Vorschlag
+read_yes_no_with_suggestion() {
+    local prompt="$1"
+    local last_value="$2"
+    local user_input
+    
+    if [[ -n "$last_value" ]]; then
+        echo -n "$prompt [Letzter Wert: $last_value] (ja/nein): "
+    else
+        echo -n "$prompt (ja/nein): "
+    fi
+    
+    read user_input
+    
+    # Wenn leer und letzter Wert vorhanden, dann letzten Wert verwenden
+    if [[ -z "$user_input" && -n "$last_value" ]]; then
+        echo "$last_value"
+    else
+        echo "$user_input"
+    fi
+}
+
+# Lade letzte Eingaben
+load_last_inputs
+
+# === Pfad abfragen ===
+DATA_DIR=$(read_with_suggestion "Pfad zum Minecraft-Datenverzeichnis" "/opt/minecraft_server" "$LAST_DATA_DIR")
 SERVER_NAME="mc"
+BACKUP_DIR="${DATA_DIR}/backups"
+PLUGIN_DIR="${DATA_DIR}/plugins"
+PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
 DOCKER_IMAGE="itzg/minecraft-server"
+LOG_FILE="${DATA_DIR}/update_log.txt"
 
 log() {
-    if [[ -z "$LOG_FILE" ]]; then
-        printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
-    else
-        printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
-    fi
+    printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
 }
 
 cleanup() {
@@ -256,39 +291,12 @@ update_docker() {
     log "Neuer Docker-Container gestartet."
 }
 
-save_config() {
-    # Sicherstellen, dass das Verzeichnis existiert
-    mkdir -p "$(dirname "$CONFIG_FILE")"
-    
-    # Konfiguration speichern
-    for key in "${!CONFIG[@]}"; do
-        echo "$key=${CONFIG[$key]}"
-    done > "$CONFIG_FILE"
-    
-    # Berechtigungen anpassen
-    chown "$ACTUAL_USER":"$ACTUAL_USER" "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
-}
-
 main() {
-    # DATA_DIR zuerst sicherstellen
-    DATA_DIR=$(read_with_suggestion "DATA_DIR" "$DATA_DIR_PROMPT" "$DATA_DIR_DEFAULT")
-    mkdir -p "$DATA_DIR"
-    
-    # Jetzt Logfile und andere Pfade setzen
-    LOG_FILE="${DATA_DIR}/update_log.txt"
-    BACKUP_DIR="${DATA_DIR}/backups"
-    PLUGIN_DIR="${DATA_DIR}/plugins"
-    PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
-    
-    # Abhängige Verzeichnisse erstellen
-    mkdir -p "$BACKUP_DIR" "$PLUGIN_DIR"
-
     log "Starte Update-Prozess..."
     shopt -s nocasematch
     check_dependencies
 
-    read -p "Soll ein neuer Server initialisiert werden? (ja/nein): " DO_INIT
+    DO_INIT=$(read_yes_no_with_suggestion "Soll ein neuer Server initialisiert werden?" "$LAST_DO_INIT")
     if [[ "$DO_INIT" =~ ^(ja|j|yes|y)$ ]]; then
         echo "ACHTUNG: Dies wird ALLE Daten löschen, inklusive Plugins, Welten und Konfigurationen!"
         read -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
@@ -305,15 +313,17 @@ main() {
         fi
     fi
 
-    # Abfragen mit Vorschlägen
-    VERSION=$(read_with_suggestion "VERSION" "Welche Minecraft-Version soll gestartet werden" "LATEST")
-    MEMORY=$(read_with_suggestion "MEMORY" "Wieviel RAM soll der Server verwenden" "6G")
-    TYPE=$(read_with_suggestion "TYPE" "Welcher Server-Typ soll verwendet werden" "PAPER")
-    DO_BACKUP=$(read_with_suggestion "DO_BACKUP" "Soll ein Backup erstellt werden (ja/nein)" "nein")
-    DO_RESTORE=$(read_with_suggestion "DO_RESTORE" "Soll ein Backup wiederhergestellt werden (ja/nein)" "nein")
-    DO_UPDATE_PLUGINS=$(read_with_suggestion "DO_UPDATE_PLUGINS" "Sollen die Plugins aktualisiert werden (ja/nein)" "nein")
-    DO_DELETE_PLUGINS=$(read_with_suggestion "DO_DELETE_PLUGINS" "Sollen die aktuellen Plugins gelöscht und gesichert werden (ja/nein)" "nein")
-    DO_START_DOCKER=$(read_with_suggestion "DO_START_DOCKER" "Soll der Docker-Container gestartet werden (ja/nein)" "ja")
+    VERSION=$(read_with_suggestion "Welche Minecraft-Version soll gestartet werden?" "LATEST" "$LAST_VERSION")
+    MEMORY=$(read_with_suggestion "Wieviel RAM soll der Server verwenden?" "6G" "$LAST_MEMORY")
+    TYPE=$(read_with_suggestion "Welcher Server-Typ soll verwendet werden?" "PAPER" "$LAST_TYPE")
+    DO_BACKUP=$(read_yes_no_with_suggestion "Soll ein Backup erstellt werden?" "$LAST_DO_BACKUP")
+    DO_RESTORE=$(read_yes_no_with_suggestion "Soll ein Backup wiederhergestellt werden?" "$LAST_DO_RESTORE")
+    DO_UPDATE_PLUGINS=$(read_yes_no_with_suggestion "Sollen die Plugins aktualisiert werden?" "$LAST_DO_UPDATE_PLUGINS")
+    DO_DELETE_PLUGINS=$(read_yes_no_with_suggestion "Sollen die aktuellen Plugins gelöscht und gesichert werden?" "$LAST_DO_DELETE_PLUGINS")
+    DO_START_DOCKER=$(read_yes_no_with_suggestion "Soll der Docker-Container gestartet werden?" "$LAST_DO_START_DOCKER")
+
+    # Speichere aktuelle Eingaben für nächsten Lauf
+    save_current_inputs
 
     [[ "$DO_BACKUP" =~ ^(ja|j|yes|y)$ ]] && create_backup
     [[ "$DO_RESTORE" =~ ^(ja|j|yes|y)$ ]] && restore_backup
@@ -325,7 +335,6 @@ main() {
     [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
 
     log "Update-Prozess abgeschlossen."
-    save_config
 }
 
 main
