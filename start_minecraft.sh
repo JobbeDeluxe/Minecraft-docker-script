@@ -44,7 +44,7 @@ read_with_history() {
     
     # Erstelle Prompt mit History-Vorschlag
     if [[ -n "$last_value" && "$last_value" != "$default" ]]; then
-        printf "%s [Letzte Eingabe: %s] (Standard: %s): " "$prompt" "$last_value" "$default"
+        printf "%s [Letzte Eingabe: %s] (Standard: %s): " "$prompt" "$last_value" "$default" >&2
         read user_input
         
         # Wenn leer, nutze letzten Wert
@@ -52,7 +52,7 @@ read_with_history() {
             user_input="$last_value"
         fi
     else
-        printf "%s (Standard: %s): " "$prompt" "$default"
+        printf "%s (Standard: %s): " "$prompt" "$default" >&2
         read user_input
     fi
     
@@ -80,7 +80,7 @@ read_yesno_with_history() {
     
     # Erstelle Prompt mit History-Vorschlag
     if [[ -n "$last_value" ]]; then
-        printf "%s [Letzte Eingabe: %s] (ja/nein): " "$prompt" "$last_value"
+        printf "%s [Letzte Eingabe: %s] (ja/nein): " "$prompt" "$last_value" >&2
         read user_input
         
         # Wenn leer, nutze letzten Wert
@@ -88,7 +88,7 @@ read_yesno_with_history() {
             user_input="$last_value"
         fi
     else
-        printf "%s (ja/nein): " "$prompt"
+        printf "%s (ja/nein): " "$prompt" >&2
         read user_input
     fi
     
@@ -111,8 +111,11 @@ read_yesno_with_history() {
     echo "$user_input"
 }
 
-# === Pfad abfragen ===
+# === Pfad abfragen (vor log-Initialisierung) ===
+echo "=== Minecraft Server Management Script ===" >&2
 DATA_DIR=$(read_with_history "Pfad zum Minecraft-Datenverzeichnis" "/opt/minecraft_server" "DATA_DIR")
+
+# === Initialisierung nach DATA_DIR ===
 SERVER_NAME="mc"
 BACKUP_DIR="${DATA_DIR}/backups"
 PLUGIN_DIR="${DATA_DIR}/plugins"
@@ -120,6 +123,10 @@ PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
 DOCKER_IMAGE="itzg/minecraft-server"
 LOG_FILE="${DATA_DIR}/update_log.txt"
 
+# Erstelle Datenverzeichnis falls es nicht existiert
+mkdir -p "$DATA_DIR"
+
+# Log-Funktion (erst nach DATA_DIR verfügbar)
 log() {
     printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
 }
@@ -193,7 +200,7 @@ create_backup() {
         log "Fehler beim Erstellen des Backups." >&2
         return 1
     fi
-    [[ "$DO_START_DOCKER" =~ ^[jJ](a)?$ ]] && start_server || true
+    [[ "$DO_START_DOCKER" == "ja" ]] && start_server || true
 }
 
 delete_and_backup_plugins() {
@@ -363,8 +370,11 @@ manage_history() {
 }
 
 main() {
-    log "Starte Update-Prozess..."
     shopt -s nocasematch
+    
+    # Jetzt kann log verwendet werden
+    log "Starte Update-Prozess..."
+    
     check_dependencies
 
     # Überprüfe ob History-Management gewünscht wird
@@ -375,7 +385,7 @@ main() {
 
     DO_INIT=$(read_yesno_with_history "Soll ein neuer Server initialisiert werden?" "DO_INIT")
     if [[ "$DO_INIT" == "ja" ]]; then
-        echo "ACHTUNG: Dies wird ALLE Daten löschen, inklusive Plugins, Welten und Konfigurationen!"
+        echo "ACHTUNG: Dies wird ALLE Daten löschen, inklusive Plugins, Welten und Konfigurationen!" >&2
         read -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
         if [[ "$CONFIRM_INIT" =~ ^(ja|j|yes|y)$ ]]; then
             log "Erstelle vor der Initialisierung ein Backup..."
