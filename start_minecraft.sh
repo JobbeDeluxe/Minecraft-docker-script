@@ -36,19 +36,17 @@ read_with_suggestion() {
     local user_input
     
     if [[ -n "$last_value" && "$last_value" != "$default_value" ]]; then
-        echo -n "$prompt [Standard: $default_value, Letzter Wert: $last_value]: "
+        read -p "$prompt [Standard: $default_value, Letzter Wert: $last_value]: " user_input
     else
-        echo -n "$prompt [Standard: $default_value]: "
+        read -p "$prompt [Standard: $default_value]: " user_input
     fi
-    
-    read user_input
     
     # Wenn leer, dann Standard verwenden
     if [[ -z "$user_input" ]]; then
-        echo "$default_value"
-    else
-        echo "$user_input"
+        user_input="$default_value"
     fi
+    
+    echo "$user_input"
 }
 
 # Funktion für Ja/Nein-Eingabe mit Vorschlag
@@ -58,19 +56,17 @@ read_yes_no_with_suggestion() {
     local user_input
     
     if [[ -n "$last_value" ]]; then
-        echo -n "$prompt [Letzter Wert: $last_value] (ja/nein): "
+        read -p "$prompt [Letzter Wert: $last_value] (ja/nein): " user_input
     else
-        echo -n "$prompt (ja/nein): "
+        read -p "$prompt (ja/nein): " user_input
     fi
-    
-    read user_input
     
     # Wenn leer und letzter Wert vorhanden, dann letzten Wert verwenden
     if [[ -z "$user_input" && -n "$last_value" ]]; then
-        echo "$last_value"
-    else
-        echo "$user_input"
+        user_input="$last_value"
     fi
+    
+    echo "$user_input"
 }
 
 # Lade letzte Eingaben
@@ -83,6 +79,9 @@ BACKUP_DIR="${DATA_DIR}/backups"
 PLUGIN_DIR="${DATA_DIR}/plugins"
 PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
 DOCKER_IMAGE="itzg/minecraft-server"
+
+# Stelle sicher, dass das Datenverzeichnis existiert
+mkdir -p "$DATA_DIR"
 LOG_FILE="${DATA_DIR}/update_log.txt"
 
 log() {
