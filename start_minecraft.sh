@@ -2,86 +2,122 @@
 
 # === Minecraft Docker Update-, Backup- und Restore-Skript ===
 
-# Datei für die letzten Eingaben
-LAST_INPUTS_FILE="$HOME/.minecraft_script_inputs"
+# === Konfigurationsdatei für History ===
+HISTORY_FILE="${HOME}/.minecraft_script_history"
 
-# Funktion zum Laden der letzten Eingaben
-load_last_inputs() {
-    if [[ -f "$LAST_INPUTS_FILE" ]]; then
-        source "$LAST_INPUTS_FILE"
+# Funktion zum Speichern der History
+save_history() {
+    local key="$1"
+    local value="$2"
+    
+    # Erstelle History-Datei wenn sie nicht existiert
+    touch "$HISTORY_FILE"
+    
+    # Entferne alte Einträge für diesen Key
+    grep -v "^${key}=" "$HISTORY_FILE" > "${HISTORY_FILE}.tmp" 2>/dev/null || true
+    
+    # Füge neuen Eintrag hinzu
+    echo "${key}=${value}" >> "${HISTORY_FILE}.tmp"
+    
+    # Ersetze alte Datei
+    mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
+}
+
+# Funktion zum Laden der History
+load_history() {
+    local key="$1"
+    
+    if [[ -f "$HISTORY_FILE" ]]; then
+        grep "^${key}=" "$HISTORY_FILE" | cut -d'=' -f2- | tail -1
     fi
 }
 
-# Funktion zum Speichern der aktuellen Eingaben
-save_current_inputs() {
-    cat > "$LAST_INPUTS_FILE" << EOF
-LAST_DATA_DIR="$DATA_DIR"
-LAST_VERSION="$VERSION"
-LAST_MEMORY="$MEMORY"
-LAST_TYPE="$TYPE"
-LAST_DO_INIT="$DO_INIT"
-LAST_DO_BACKUP="$DO_BACKUP"
-LAST_DO_RESTORE="$DO_RESTORE"
-LAST_DO_UPDATE_PLUGINS="$DO_UPDATE_PLUGINS"
-LAST_DO_DELETE_PLUGINS="$DO_DELETE_PLUGINS"
-LAST_DO_START_DOCKER="$DO_START_DOCKER"
-EOF
-}
-
-# Funktion für erweiterte Eingabe mit Vorschlag
-read_with_suggestion() {
+# Erweiterte read-Funktion mit History-Unterstützung
+read_with_history() {
     local prompt="$1"
-    local default_value="$2"
-    local last_value="$3"
+    local default="$2"
+    local history_key="$3"
     local user_input
     
-    if [[ -n "$last_value" && "$last_value" != "$default_value" ]]; then
-        read -p "$prompt [Standard: $default_value, Letzter Wert: $last_value]: " user_input
+    # Lade letzten Wert aus History
+    local last_value=$(load_history "$history_key")
+    
+    # Erstelle Prompt mit History-Vorschlag
+    if [[ -n "$last_value" && "$last_value" != "$default" ]]; then
+        printf "%s [Letzte Eingabe: %s] (Standard: %s): " "$prompt" "$last_value" "$default"
+        read user_input
+        
+        # Wenn leer, nutze letzten Wert
+        if [[ -z "$user_input" ]]; then
+            user_input="$last_value"
+        fi
     else
-        read -p "$prompt [Standard: $default_value]: " user_input
+        printf "%s (Standard: %s): " "$prompt" "$default"
+        read user_input
     fi
     
-    # Wenn leer, dann Standard verwenden
+    # Wenn immer noch leer, nutze Standard
     if [[ -z "$user_input" ]]; then
-        user_input="$default_value"
+        user_input="$default"
+    fi
+    
+    # Speichere in History (nur wenn nicht Standard)
+    if [[ "$user_input" != "$default" ]]; then
+        save_history "$history_key" "$user_input"
     fi
     
     echo "$user_input"
 }
 
-# Funktion für Ja/Nein-Eingabe mit Vorschlag
-read_yes_no_with_suggestion() {
+# Erweiterte read-Funktion für Ja/Nein-Fragen mit History
+read_yesno_with_history() {
     local prompt="$1"
-    local last_value="$2"
+    local history_key="$2"
     local user_input
     
+    # Lade letzten Wert aus History
+    local last_value=$(load_history "$history_key")
+    
+    # Erstelle Prompt mit History-Vorschlag
     if [[ -n "$last_value" ]]; then
-        read -p "$prompt [Letzter Wert: $last_value] (ja/nein): " user_input
+        printf "%s [Letzte Eingabe: %s] (ja/nein): " "$prompt" "$last_value"
+        read user_input
+        
+        # Wenn leer, nutze letzten Wert
+        if [[ -z "$user_input" ]]; then
+            user_input="$last_value"
+        fi
     else
-        read -p "$prompt (ja/nein): " user_input
+        printf "%s (ja/nein): " "$prompt"
+        read user_input
     fi
     
-    # Wenn leer und letzter Wert vorhanden, dann letzten Wert verwenden
-    if [[ -z "$user_input" && -n "$last_value" ]]; then
-        user_input="$last_value"
-    fi
+    # Normalisiere Eingabe
+    case "$user_input" in
+        [jJyY]|[jJ][aA]|[yY][eE][sS])
+            user_input="ja"
+            ;;
+        [nN]|[nN][eE][iI][nN]|[nN][oO])
+            user_input="nein"
+            ;;
+        *)
+            user_input="nein"
+            ;;
+    esac
+    
+    # Speichere in History
+    save_history "$history_key" "$user_input"
     
     echo "$user_input"
 }
-
-# Lade letzte Eingaben
-load_last_inputs
 
 # === Pfad abfragen ===
-DATA_DIR=$(read_with_suggestion "Pfad zum Minecraft-Datenverzeichnis" "/opt/minecraft_server" "$LAST_DATA_DIR")
+DATA_DIR=$(read_with_history "Pfad zum Minecraft-Datenverzeichnis" "/opt/minecraft_server" "DATA_DIR")
 SERVER_NAME="mc"
 BACKUP_DIR="${DATA_DIR}/backups"
 PLUGIN_DIR="${DATA_DIR}/plugins"
 PLUGIN_CONFIG="${DATA_DIR}/plugins.txt"
 DOCKER_IMAGE="itzg/minecraft-server"
-
-# Stelle sicher, dass das Datenverzeichnis existiert
-mkdir -p "$DATA_DIR"
 LOG_FILE="${DATA_DIR}/update_log.txt"
 
 log() {
@@ -157,7 +193,7 @@ create_backup() {
         log "Fehler beim Erstellen des Backups." >&2
         return 1
     fi
-    [[ "$DO_START_DOCKER" =~ ^[nN](ein)?$ ]] && start_server || true
+    [[ "$DO_START_DOCKER" =~ ^[jJ](a)?$ ]] && start_server || true
 }
 
 delete_and_backup_plugins() {
@@ -290,13 +326,55 @@ update_docker() {
     log "Neuer Docker-Container gestartet."
 }
 
+# Funktion zum Anzeigen und Löschen der History
+manage_history() {
+    echo "=== History Management ==="
+    echo "1. History anzeigen"
+    echo "2. History löschen"
+    echo "3. Zurück zum Hauptmenü"
+    read -p "Wählen Sie eine Option: " choice
+    
+    case "$choice" in
+        1)
+            if [[ -f "$HISTORY_FILE" ]]; then
+                echo "Gespeicherte Einstellungen:"
+                cat "$HISTORY_FILE"
+            else
+                echo "Keine History vorhanden."
+            fi
+            ;;
+        2)
+            if [[ -f "$HISTORY_FILE" ]]; then
+                rm "$HISTORY_FILE"
+                echo "History gelöscht."
+            else
+                echo "Keine History vorhanden."
+            fi
+            ;;
+        3)
+            return
+            ;;
+        *)
+            echo "Ungültige Auswahl."
+            ;;
+    esac
+    
+    read -p "Drücken Sie Enter um fortzufahren..."
+}
+
 main() {
     log "Starte Update-Prozess..."
     shopt -s nocasematch
     check_dependencies
 
-    DO_INIT=$(read_yes_no_with_suggestion "Soll ein neuer Server initialisiert werden?" "$LAST_DO_INIT")
-    if [[ "$DO_INIT" =~ ^(ja|j|yes|y)$ ]]; then
+    # Überprüfe ob History-Management gewünscht wird
+    if [[ "$1" == "--history" ]]; then
+        manage_history
+        exit 0
+    fi
+
+    DO_INIT=$(read_yesno_with_history "Soll ein neuer Server initialisiert werden?" "DO_INIT")
+    if [[ "$DO_INIT" == "ja" ]]; then
         echo "ACHTUNG: Dies wird ALLE Daten löschen, inklusive Plugins, Welten und Konfigurationen!"
         read -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
         if [[ "$CONFIRM_INIT" =~ ^(ja|j|yes|y)$ ]]; then
@@ -312,28 +390,40 @@ main() {
         fi
     fi
 
-    VERSION=$(read_with_suggestion "Welche Minecraft-Version soll gestartet werden?" "LATEST" "$LAST_VERSION")
-    MEMORY=$(read_with_suggestion "Wieviel RAM soll der Server verwenden?" "6G" "$LAST_MEMORY")
-    TYPE=$(read_with_suggestion "Welcher Server-Typ soll verwendet werden?" "PAPER" "$LAST_TYPE")
-    DO_BACKUP=$(read_yes_no_with_suggestion "Soll ein Backup erstellt werden?" "$LAST_DO_BACKUP")
-    DO_RESTORE=$(read_yes_no_with_suggestion "Soll ein Backup wiederhergestellt werden?" "$LAST_DO_RESTORE")
-    DO_UPDATE_PLUGINS=$(read_yes_no_with_suggestion "Sollen die Plugins aktualisiert werden?" "$LAST_DO_UPDATE_PLUGINS")
-    DO_DELETE_PLUGINS=$(read_yes_no_with_suggestion "Sollen die aktuellen Plugins gelöscht und gesichert werden?" "$LAST_DO_DELETE_PLUGINS")
-    DO_START_DOCKER=$(read_yes_no_with_suggestion "Soll der Docker-Container gestartet werden?" "$LAST_DO_START_DOCKER")
+    VERSION=$(read_with_history "Welche Minecraft-Version soll gestartet werden?" "LATEST" "VERSION")
+    MEMORY=$(read_with_history "Wieviel RAM soll der Server verwenden?" "6G" "MEMORY")
+    TYPE=$(read_with_history "Welcher Server-Typ soll verwendet werden?" "PAPER" "TYPE")
+    
+    DO_BACKUP=$(read_yesno_with_history "Soll ein Backup erstellt werden?" "DO_BACKUP")
+    DO_RESTORE=$(read_yesno_with_history "Soll ein Backup wiederhergestellt werden?" "DO_RESTORE")
+    DO_UPDATE_PLUGINS=$(read_yesno_with_history "Sollen die Plugins aktualisiert werden?" "DO_UPDATE_PLUGINS")
+    DO_DELETE_PLUGINS=$(read_yesno_with_history "Sollen die aktuellen Plugins gelöscht und gesichert werden?" "DO_DELETE_PLUGINS")
+    DO_START_DOCKER=$(read_yesno_with_history "Soll der Docker-Container gestartet werden?" "DO_START_DOCKER")
 
-    # Speichere aktuelle Eingaben für nächsten Lauf
-    save_current_inputs
-
-    [[ "$DO_BACKUP" =~ ^(ja|j|yes|y)$ ]] && create_backup
-    [[ "$DO_RESTORE" =~ ^(ja|j|yes|y)$ ]] && restore_backup
-    if [[ "$DO_UPDATE_PLUGINS" =~ ^(ja|j|yes|y)$ ]]; then
+    [[ "$DO_BACKUP" == "ja" ]] && create_backup
+    [[ "$DO_RESTORE" == "ja" ]] && restore_backup
+    if [[ "$DO_UPDATE_PLUGINS" == "ja" ]]; then
         update_plugins
     else
-        [[ "$DO_DELETE_PLUGINS" =~ ^(ja|j|yes|y)$ ]] && delete_and_backup_plugins
+        [[ "$DO_DELETE_PLUGINS" == "ja" ]] && delete_and_backup_plugins
     fi
-    [[ "$DO_START_DOCKER" =~ ^(ja|j|yes|y)$ ]] && update_docker
+    [[ "$DO_START_DOCKER" == "ja" ]] && update_docker
 
     log "Update-Prozess abgeschlossen."
 }
 
-main
+# Hilfe anzeigen
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "Minecraft Server Management Script"
+    echo "Verwendung: $0 [Option]"
+    echo ""
+    echo "Optionen:"
+    echo "  --history    History-Management öffnen"
+    echo "  --help, -h   Diese Hilfe anzeigen"
+    echo ""
+    echo "Das Script speichert Ihre letzten Eingaben automatisch und"
+    echo "schlägt sie beim nächsten Start vor."
+    exit 0
+fi
+
+main "$@"
