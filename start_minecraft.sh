@@ -371,53 +371,63 @@ manage_history() {
 
 main() {
     shopt -s nocasematch
-    
-    # Jetzt kann log verwendet werden
     log "Starte Update-Prozess..."
-    
     check_dependencies
 
-    # Überprüfe ob History-Management gewünscht wird
-    if [[ "$1" == "--history" ]]; then
-        manage_history
-        exit 0
-    fi
+    # History-Management ggf. ausführen
+    if [[ "$1" == "--history" ]]; then manage_history; exit 0; fi
 
     DO_INIT=$(read_yesno_with_history "Soll ein neuer Server initialisiert werden?" "DO_INIT")
     if [[ "$DO_INIT" == "ja" ]]; then
-        echo "ACHTUNG: Dies wird ALLE Daten löschen, inklusive Plugins, Welten und Konfigurationen!" >&2
+        echo "ACHTUNG: Dies wird ALLE Daten löschen..." >&2
         read -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
         if [[ "$CONFIRM_INIT" =~ ^(ja|j|yes|y)$ ]]; then
             log "Erstelle vor der Initialisierung ein Backup..."
-            create_backup || {
-                log "Backup fehlgeschlagen. Abbruch der Initialisierung."
-                exit 1
-            }
+            create_backup || { log "Backup fehlgeschlagen. Abbruch."; exit 1; }
             initialize_new_server
+            # Nach Initialisierung keine Plugin-Fragen mehr
+            ASK_PLUGINS="nein"
         else
             log "Initialisierung abgebrochen."
             exit 0
         fi
     fi
 
-    VERSION=$(read_with_history "Welche Minecraft-Version soll gestartet werden?" "LATEST" "VERSION")
-    MEMORY=$(read_with_history "Wieviel RAM soll der Server verwenden?" "6G" "MEMORY")
-    TYPE=$(read_with_history "Welcher Server-Typ soll verwendet werden?" "PAPER" "TYPE")
-    
+    VERSION=$(read_with_history "Welche Minecraft-Version..." "LATEST" "VERSION")
+    MEMORY=$(read_with_history "Wieviel RAM..." "6G" "MEMORY")
+    TYPE=$(read_with_history "Welcher Server-Typ..." "PAPER" "TYPE")
+
     DO_BACKUP=$(read_yesno_with_history "Soll ein Backup erstellt werden?" "DO_BACKUP")
     DO_RESTORE=$(read_yesno_with_history "Soll ein Backup wiederhergestellt werden?" "DO_RESTORE")
-    DO_UPDATE_PLUGINS=$(read_yesno_with_history "Sollen die Plugins aktualisiert werden?" "DO_UPDATE_PLUGINS")
-    DO_DELETE_PLUGINS=$(read_yesno_with_history "Sollen die aktuellen Plugins gelöscht und gesichert werden?" "DO_DELETE_PLUGINS")
+
+    # Wenn Initialisierung, keine Plugin-Aktionen abfragen
+    if [[ "$DO_INIT" == "ja" ]]; then
+        DO_UPDATE_PLUGINS="nein"
+        DO_DELETE_PLUGINS="nein"
+    else
+        DO_UPDATE_PLUGINS=$(read_yesno_with_history "Sollen die Plugins aktualisiert werden?" "DO_UPDATE_PLUGINS")
+        DO_DELETE_PLUGINS=$(read_yesno_with_history "Sollen die aktuellen Plugins gelöscht und gesichert werden?" "DO_DELETE_PLUGINS")
+    fi
+
     DO_START_DOCKER=$(read_yesno_with_history "Soll der Docker-Container gestartet werden?" "DO_START_DOCKER")
 
     [[ "$DO_BACKUP" == "ja" ]] && create_backup
     [[ "$DO_RESTORE" == "ja" ]] && restore_backup
+
     if [[ "$DO_UPDATE_PLUGINS" == "ja" ]]; then
         update_plugins
     else
         [[ "$DO_DELETE_PLUGINS" == "ja" ]] && delete_and_backup_plugins
     fi
-    [[ "$DO_START_DOCKER" == "ja" ]] && update_docker
+
+    if [[ "$DO_START_DOCKER" == "ja" ]]; then
+        update_docker
+    else
+        # Container trotzdem einmal "neu starten" (run), aber gleich wieder stoppen
+        update_docker
+        log "Stoppe den Docker-Container sofort wieder..."
+        docker stop "$SERVER_NAME"
+    fi
 
     log "Update-Prozess abgeschlossen."
 }
