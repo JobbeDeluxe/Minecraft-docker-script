@@ -402,7 +402,15 @@ EOL
                     fail_list+=("$plugin_name")
                 fi
             fi
-
+        else
+            if download_file "$plugin_url" "$target"; then
+                log "ERFOLG: $plugin_name (Direktlink)"
+                ok_list+=("$plugin_name")
+            else
+                log "FEHLER: Download fehlgeschlagen für $plugin_name"
+                fail_list+=("$plugin_name")
+            fi
+        fi
     done < "$PLUGIN_CONFIG"
 
     # Manuelle Plugins übernehmen (falls vorhanden)
