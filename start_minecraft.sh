@@ -176,30 +176,46 @@ delete_and_backup_plugins() {
 
 normalize_github_owner_repo() {
     local url="$1"
-    if [[ "$url" =~ github\.com/([^/]+)/([^/]+) ]]; then
-        local owner="${BASHREMATCH[1]}"
-        local repo="${BASHREMATCH[2]}"
-        repo="${repo%.git}"
+
+    # Protokoll abschneiden
+    url="${url#http://}"; url="${url#https://}"
+
+    # Erwartet mind. github.com/<Owner>/<Repo>[...]
+    if [[ "$url" =~ ^github\.com/([^/?#]+)/([^/?#]+) ]]; then
+        local owner="${BASH_REMATCH[1]}"
+        local repo="${BASH_REMATCH[2]}"
+        repo="${repo%.git}"           # evtl. .git entfernen
         echo "${owner}/${repo}"
         return 0
     fi
     return 1
 }
 
+
 github_latest_jar_url() {
     local owner_repo="$1"
     local api_url="https://api.github.com/repos/${owner_repo}/releases/latest"
+
     local auth_args=()
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
     fi
+
+    # Hinweis: bei Rate-Limit liefert GitHub 403 – dann abbrechen
     local resp
-    resp=$(curl -sfL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "$api_url") || return 1
-    local url
-    url=$(echo "$resp" | jq -r '.assets[] | select(.name|test("(?i)(spigot|paper).+\\.jar$")) | .browser_download_url' | head -1)
-    if [[ -z "$url" || "$url" == "null" ]]; then
-        url=$(echo "$resp" | jq -r '.assets[] | select(.name|test("\\.jar$")) | .browser_download_url' | head -1)
+    if ! resp=$(curl -sfL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "$api_url"); then
+        return 1
     fi
+
+    # 1) bevorzugt spigot/paper
+    local url
+    url=$(echo "$resp" | jq -r '.assets[]? | select(.name|test("(?i)(spigot|paper).+\\.jar$")) | .browser_download_url' | head -1)
+
+    # 2) sonst irgendeine .jar
+    if [[ -z "$url" || "$url" == "null" ]]; then
+        url=$(echo "$resp" | jq -r '.assets[]? | select(.name|test("\\.jar$")) | .browser_download_url' | head -1)
+    fi
+
     [[ -n "$url" && "$url" != "null" ]] && echo "$url"
 }
 
