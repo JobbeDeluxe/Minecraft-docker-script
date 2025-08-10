@@ -321,7 +321,7 @@ update_plugins() {
 # Format: <Plugin-Name> <Download-URL oder build[:branch]>
 
 # Aktive Zeile: CoreProtect aus master bauen (inkl. plugin.yml Patch auf `branch: developement`)
-CoreProtect build:master
+# CoreProtect build:master
 
 # Beispiele (deaktiviert):
 # ViaVersion https://github.com/ViaVersion/ViaVersion
