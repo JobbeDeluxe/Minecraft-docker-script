@@ -174,24 +174,39 @@ delete_and_backup_plugins() {
 
 # ============ Downloader-Helfer (GitHub + Fremdseiten) ============
 
+# --- ERSATZ: GitHub owner/repo Parser (ohne Regex, sehr robust) ---
 normalize_github_owner_repo() {
     local url="$1"
 
-    # Protokoll abschneiden
-    url="${url#http://}"; url="${url#https://}"
+    # Schema/Host-Varianten wegräumen
+    url="${url#http://}"; url="${url#https://}"; url="${url#www.}"
 
-    # Erwartet mind. github.com/<Owner>/<Repo>[...]
-    if [[ "$url" =~ ^github\.com/([^/?#]+)/([^/?#]+) ]]; then
-        local owner="${BASH_REMATCH[1]}"
-        local repo="${BASH_REMATCH[2]}"
-        repo="${repo%.git}"           # evtl. .git entfernen
+    # Muss mit github.com/ beginnen
+    if [[ "$url" != github.com/* ]]; then
+        return 1
+    fi
+
+    # Alles nach github.com/
+    local path="${url#github.com/}"
+
+    # Erste 2 Segmente = owner/repo
+    local owner="${path%%/*}"
+    local rest="${path#*/}"
+    local repo="${rest%%/*}"
+
+    # Säubern (Query/Fragment/.git)
+    owner="${owner%%\?*}"; owner="${owner%%#*}"
+    repo="${repo%%\?*}";  repo="${repo%%#*}"
+    repo="${repo%.git}"
+
+    if [[ -n "$owner" && -n "$repo" ]]; then
         echo "${owner}/${repo}"
         return 0
     fi
     return 1
 }
 
-
+# --- ERSATZ: releases/latest -> .jar Asset ermitteln (mit Härtung) ---
 github_latest_jar_url() {
     local owner_repo="$1"
     local api_url="https://api.github.com/repos/${owner_repo}/releases/latest"
@@ -201,17 +216,15 @@ github_latest_jar_url() {
         auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
     fi
 
-    # Hinweis: bei Rate-Limit liefert GitHub 403 – dann abbrechen
+    # API abfragen
     local resp
     if ! resp=$(curl -sfL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "$api_url"); then
         return 1
     fi
 
-    # 1) bevorzugt spigot/paper
+    # Bevorzugt spigot/paper, sonst erste .jar
     local url
     url=$(echo "$resp" | jq -r '.assets[]? | select(.name|test("(?i)(spigot|paper).+\\.jar$")) | .browser_download_url' | head -1)
-
-    # 2) sonst irgendeine .jar
     if [[ -z "$url" || "$url" == "null" ]]; then
         url=$(echo "$resp" | jq -r '.assets[]? | select(.name|test("\\.jar$")) | .browser_download_url' | head -1)
     fi
@@ -361,11 +374,12 @@ EOL
         fi
 
         # --- GitHub-Release oder Fremdseite ---
-        if [[ "$plugin_url" == *"github.com"* ]]; then
-            local owner_repo
-            if owner_repo=$(normalize_github_owner_repo "$plugin_url"); then
+                if [[ "$plugin_url" == *"github.com"* ]]; then
+            local owner_repo=""
+            if owner_repo="$(normalize_github_owner_repo "$plugin_url")"; then
+                log "GitHub erkannt: URL='$plugin_url' -> owner_repo='${owner_repo}'"
                 local asset_url
-                asset_url=$(github_latest_jar_url "$owner_repo") || asset_url=""
+                asset_url="$(github_latest_jar_url "$owner_repo")" || asset_url=""
                 if [[ -n "$asset_url" ]]; then
                     if download_file "$asset_url" "$target"; then
                         log "ERFOLG: $plugin_name (GitHub API)"
@@ -375,10 +389,11 @@ EOL
                         fail_list+=("$plugin_name")
                     fi
                 else
-                    log "FEHLER: Keine .jar in neuester Release gefunden für $plugin_name ($owner_repo)"
+                    log "FEHLER: Keine .jar in neuester Release gefunden für $plugin_name (${owner_repo})"
                     fail_list+=("$plugin_name")
                 fi
             else
+                log "WARNUNG: Konnte owner/repo aus URL NICHT ermitteln, versuche direkten Download: $plugin_url"
                 if download_file "$plugin_url" "$target"; then
                     log "ERFOLG: $plugin_name (direkter GitHub-Link)"
                     ok_list+=("$plugin_name")
@@ -387,15 +402,6 @@ EOL
                     fail_list+=("$plugin_name")
                 fi
             fi
-        else
-            if download_file "$plugin_url" "$target"; then
-                log "ERFOLG: $plugin_name (Direktlink)"
-                ok_list+=("$plugin_name")
-            else
-                log "FEHLER: Download fehlgeschlagen für $plugin_name"
-                fail_list+=("$plugin_name")
-            fi
-        fi
 
     done < "$PLUGIN_CONFIG"
 
