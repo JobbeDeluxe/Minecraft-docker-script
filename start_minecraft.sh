@@ -1,11 +1,13 @@
 #!/bin/bash
+set -euo pipefail
 
 # === Minecraft Docker Update-, Backup- und Restore-Skript ===
 
 # === Konfigurationsdatei für History ===
 HISTORY_FILE="${HOME}/.minecraft_script_history"
 
-# Funktion zum Speichern der History
+# ------------------------ History-Helpers ------------------------
+
 save_history() {
     local key="$1"
     local value="$2"
@@ -15,7 +17,6 @@ save_history() {
     mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
 }
 
-# Funktion zum Laden der History
 load_history() {
     local key="$1"
     if [[ -f "$HISTORY_FILE" ]]; then
@@ -23,54 +24,55 @@ load_history() {
     fi
 }
 
-# Erweiterte read-Funktion mit History-Unterstützung
 read_with_history() {
     local prompt="$1"
     local default="$2"
     local history_key="$3"
-    local user_input
-    local last_value
-    last_value=$(load_history "$history_key")
-    if [[ -n "$last_value" && "$last_value" != "$default" ]]; then
+    local user_input last_value
+    last_value=$(load_history "$history_key" || true)
+
+    if [[ -n "${last_value:-}" && "$last_value" != "$default" ]]; then
         printf "%s [Letzte Eingabe: %s] (Standard: %s): " "$prompt" "$last_value" "$default" >&2
-        read user_input
-        [[ -z "$user_input" ]] && user_input="$last_value"
+        read -r user_input || true
+        [[ -z "${user_input:-}" ]] && user_input="$last_value"
     else
         printf "%s (Standard: %s): " "$prompt" "$default" >&2
-        read user_input
+        read -r user_input || true
     fi
-    [[ -z "$user_input" ]] && user_input="$default"
+
+    [[ -z "${user_input:-}" ]] && user_input="$default"
     if [[ "$user_input" != "$default" ]]; then
         save_history "$history_key" "$user_input"
     fi
     echo "$user_input"
 }
 
-# Erweiterte read-Funktion für Ja/Nein-Fragen mit History
 read_yesno_with_history() {
     local prompt="$1"
     local history_key="$2"
-    local user_input
-    local last_value
-    last_value=$(load_history "$history_key")
-    if [[ -n "$last_value" ]]; then
+    local user_input last_value
+    last_value=$(load_history "$history_key" || true)
+
+    if [[ -n "${last_value:-}" ]]; then
         printf "%s [Letzte Eingabe: %s] (ja/nein): " "$prompt" "$last_value" >&2
-        read user_input
-        [[ -z "$user_input" ]] && user_input="$last_value"
+        read -r user_input || true
+        [[ -z "${user_input:-}" ]] && user_input="$last_value"
     else
         printf "%s (ja/nein): " "$prompt" >&2
-        read user_input
+        read -r user_input || true
     fi
-    case "$user_input" in
-        [jJyY]|[jJ][aA]|[yY][eE][sS]) user_input="ja" ;;
-        [nN]|[nN][eE][iI][nN]|[nN][oO]) user_input="nein" ;;
-        *) user_input="nein" ;;
+
+    case "${user_input,,}" in
+        j|ja|y|yes) user_input="ja" ;;
+        n|nein|no)  user_input="nein" ;;
+        *)          user_input="nein" ;;
     esac
+
     save_history "$history_key" "$user_input"
     echo "$user_input"
 }
 
-# === Pfad abfragen (vor log-Initialisierung) ===
+# === Pfad abfragen (vor Log-Init) ===
 echo "=== Minecraft Server Management Script ===" >&2
 DATA_DIR=$(read_with_history "Pfad zum Minecraft-Datenverzeichnis" "/opt/minecraft_server" "DATA_DIR")
 
@@ -83,6 +85,8 @@ DOCKER_IMAGE="itzg/minecraft-server"
 LOG_FILE="${DATA_DIR}/update_log.txt"
 
 mkdir -p "$DATA_DIR"
+
+# ------------------------ Logging & Traps ------------------------
 
 log() {
     printf "%s - %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE"
@@ -97,24 +101,23 @@ trap cleanup SIGINT SIGTERM
 check_dependencies() {
     local deps=("docker" "jq" "curl" "wget" "unzip" "sed" "awk")
     for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
+        if ! command -v "$dep" &>/dev/null; then
             log "Fehler: $dep ist nicht installiert."
             exit 1
         fi
     done
 }
 
+# ------------------------ Docker Helpers ------------------------
+
 stop_server() {
     log "Stoppe Server..."
-    docker stop "$SERVER_NAME" || {
-        log "Fehler: Konnte den Server nicht stoppen." >&2
-        return 1
-    }
+    docker stop "$SERVER_NAME" >/dev/null 2>&1 || true
 }
 
 start_server() {
     log "Starte Server..."
-    docker start "$SERVER_NAME" || {
+    docker start "$SERVER_NAME" >/dev/null 2>&1 || {
         log "Fehler: Konnte den Server nicht starten." >&2
         return 1
     }
@@ -130,7 +133,7 @@ initialize_new_server() {
 }
 
 create_backup() {
-    stop_server || return 1
+    stop_server || true
     log "Erstelle Backup..."
     mkdir -p "$BACKUP_DIR"
     local backup_name="backup_$(date +%Y%m%d%H%M)"
@@ -140,61 +143,51 @@ create_backup() {
     start_time=$(date +%s)
     tar --exclude="./backups" -czf "$backup_file" -C "$DATA_DIR" . &
     local pid=$!
-    while kill -0 $pid 2> /dev/null; do
+    while kill -0 "$pid" 2>/dev/null; do
         sleep 5
         local current_size
         current_size=$(du -sh "$backup_file" 2>/dev/null | awk '{print $1}')
         local elapsed_time=$(( $(date +%s) - start_time ))
-        local elapsed_minutes=$((elapsed_time / 60))
-        local elapsed_seconds=$((elapsed_time % 60))
-        log "Backup läuft: Größe=$current_size, verstrichene Zeit=${elapsed_minutes}m ${elapsed_seconds}s"
+        log "Backup läuft: Größe=${current_size:-0}, verstrichene Zeit=${elapsed_time}s"
     done
-    if wait $pid; then
+    if wait "$pid"; then
         local final_size
         final_size=$(du -sh "$backup_file" | awk '{print $1}')
         local total_time=$(( $(date +%s) - start_time ))
-        local total_minutes=$((total_time / 60))
-        local total_seconds=$((total_time % 60))
-        log "Backup erstellt: $backup_file (Größe: $final_size, Dauer: ${total_minutes}m ${total_seconds}s)"
+        log "Backup erstellt: $backup_file (Größe: $final_size, Dauer: ${total_time}s)"
     else
         log "Fehler beim Erstellen des Backups." >&2
         return 1
     fi
-    [[ "$DO_START_DOCKER" == "ja" ]] && start_server || true
+    [[ "${DO_START_DOCKER:-nein}" == "ja" ]] && start_server || true
 }
 
 delete_and_backup_plugins() {
     log "Sichere bestehende Plugins nach ${PLUGIN_DIR}/old_version"
     mkdir -p "${PLUGIN_DIR}/old_version"
+    local timestamp
     timestamp=$(date +%Y%m%d_%H%M%S)
     find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -exec mv -v {} "${PLUGIN_DIR}/old_version/" \; | tee -a "$LOG_FILE"
     [[ -f "$PLUGIN_CONFIG" ]] && cp -v "$PLUGIN_CONFIG" "${PLUGIN_DIR}/old_version/plugins_$timestamp.txt" | tee -a "$LOG_FILE"
     log "Alte Plugins wurden gesichert."
 }
 
-# ============ Downloader-Helfer (GitHub + Fremdseiten) ============
+# ------------------------ Download Helpers ------------------------
 
-# --- ERSATZ: GitHub owner/repo Parser (ohne Regex, sehr robust) ---
+# Robuste Erkennung von owner/repo aus GitHub-URL (ohne Regex-Fallen)
 normalize_github_owner_repo() {
     local url="$1"
 
-    # Schema/Host-Varianten wegräumen
     url="${url#http://}"; url="${url#https://}"; url="${url#www.}"
-
-    # Muss mit github.com/ beginnen
     if [[ "$url" != github.com/* ]]; then
         return 1
     fi
 
-    # Alles nach github.com/
     local path="${url#github.com/}"
-
-    # Erste 2 Segmente = owner/repo
     local owner="${path%%/*}"
     local rest="${path#*/}"
     local repo="${rest%%/*}"
 
-    # Säubern (Query/Fragment/.git)
     owner="${owner%%\?*}"; owner="${owner%%#*}"
     repo="${repo%%\?*}";  repo="${repo%%#*}"
     repo="${repo%.git}"
@@ -206,7 +199,7 @@ normalize_github_owner_repo() {
     return 1
 }
 
-# --- ERSATZ: releases/latest -> .jar Asset ermitteln (mit Härtung) ---
+# Ermittelt die neueste Release-JAR aus GitHub
 github_latest_jar_url() {
     local owner_repo="$1"
     local api_url="https://api.github.com/repos/${owner_repo}/releases/latest"
@@ -216,38 +209,37 @@ github_latest_jar_url() {
         auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
     fi
 
-    # API abfragen
     local resp
     if ! resp=$(curl -sfL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "$api_url"); then
         return 1
     fi
 
-    # Bevorzugt spigot/paper, sonst erste .jar
     local url
     url=$(echo "$resp" | jq -r '.assets[]? | select(.name|test("(?i)(spigot|paper).+\\.jar$")) | .browser_download_url' | head -1)
-    if [[ -z "$url" || "$url" == "null" ]]; then
+    if [[ -z "${url:-}" || "$url" == "null" ]]; then
         url=$(echo "$resp" | jq -r '.assets[]? | select(.name|test("\\.jar$")) | .browser_download_url' | head -1)
     fi
 
-    [[ -n "$url" && "$url" != "null" ]] && echo "$url"
+    [[ -n "${url:-}" && "$url" != "null" ]] && echo "$url"
 }
 
+# Allzweck-Download
 download_file() {
     local url="$1"
     local out="$2"
     curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -A "Mozilla/5.0" -o "$out" "$url"
 }
 
-# ============ CoreProtect: Source-Build aus master inkl. plugin.yml-Patch ============
+# ------------------------ CoreProtect Build (master + plugin.yml Patch) ------------------------
 
-# usage: build_coreprotect_from_source <branch> <out_jar_path>
+# build_coreprotect_from_source <branch> <out_jar_path>
 build_coreprotect_from_source() {
     local branch="${1:-master}"
     local out_path="$2"
 
-    local workdir
+    local workdir zip srcdir plugin_yml built
     workdir="$(mktemp -d)"
-    local zip="${workdir}/src.zip"
+    zip="${workdir}/src.zip"
 
     log "CoreProtect: Lade Source (Branch: ${branch})..."
     if ! curl -fL -A "Mozilla/5.0" -o "$zip" "https://github.com/PlayPro/CoreProtect/archive/refs/heads/${branch}.zip"; then
@@ -258,70 +250,66 @@ build_coreprotect_from_source() {
 
     unzip -q "$zip" -d "$workdir" || { log "FEHLER: Entpacken fehlgeschlagen."; rm -rf "$workdir"; return 1; }
 
-    # plugin.yml finden und anpassen
-    local plugin_yml
     plugin_yml="$(find "$workdir" -type f -path "*/src/main/resources/plugin.yml" | head -1)"
-    if [[ -z "$plugin_yml" ]]; then
+    if [[ -z "${plugin_yml:-}" ]]; then
         log "FEHLER: plugin.yml nicht gefunden."
         rm -rf "$workdir"
         return 1
     fi
 
-    # Ersetze exakt ${project.branch} -> developement, oder notfalls jede Branch-Zeile
+    # Patch: ${project.branch} -> developement
     if grep -q 'branch:[[:space:]]*\${project\.branch}' "$plugin_yml"; then
         sed -i 's/branch:[[:space:]]*\${project\.branch}/branch: developement/' "$plugin_yml"
         log "CoreProtect: plugin.yml angepasst (branch -> developement)."
     else
-        # Fallback: Branch-Zeile überschreiben
-        sed -i 's/^branch:[[:space:]].*/branch: developement/' "$plugin_yml" || true
-        if ! grep -q '^branch:[[:space:]]*developement$' "$plugin_yml"; then
-            # Falls keine Branch-Zeile existierte, füge sie oben ein
+        # Fallback: vorhandene branch-Zeile überschreiben oder Zeile hinzufügen
+        if grep -q '^branch:' "$plugin_yml"; then
+            sed -i 's/^branch:[[:space:]].*/branch: developement/' "$plugin_yml"
+        else
             sed -i '1i branch: developement' "$plugin_yml"
         fi
         log "CoreProtect: plugin.yml (Fallback) – branch: developement gesetzt."
     fi
 
-    # Build (lokal mvn oder via Docker)
-    local srcdir
-    srcdir="$(dirname "$(dirname "$plugin_yml")")"   # -> .../src/main
-    srcdir="$(dirname "$srcdir")"                    # -> .../src
-    srcdir="$(dirname "$srcdir")"                    # -> Projektwurzel
+    # Projektwurzel bestimmen
+    srcdir="$(dirname "$(dirname "$plugin_yml")")"  # .../src/main
+    srcdir="$(dirname "$srcdir")"                  # .../src
+    srcdir="$(dirname "$srcdir")"                  # Projektwurzel
 
     log "CoreProtect: Baue Plugin (Maven, Tests übersprungen)..."
     if command -v mvn >/dev/null 2>&1; then
-        ( cd "$srcdir" && mvn -q -DskipTests package ) || { log "FEHLER: Maven-Build fehlgeschlagen."; rm -rf "$workdir"; return 1; }
+        ( cd "$srcdir" && mvn -q -DskipTests package )
     else
-        docker run --rm -v "$srcdir":/src -w /src maven:3.9-eclipse-temurin-21 mvn -q -DskipTests package \
-            || { log "FEHLER: Docker/Maven-Build fehlgeschlagen."; rm -rf "$workdir"; return 1; }
+        docker run --rm -v "$srcdir":/src -w /src maven:3.9-eclipse-temurin-21 mvn -q -DskipTests package
     fi
 
-    local built
     built="$(find "$srcdir/target" -maxdepth 1 -type f -name 'CoreProtect-*.jar' | head -1)"
-    if [[ -z "$built" ]]; then
+    if [[ -z "${built:-}" ]]; then
         log "FEHLER: CoreProtect-JAR nicht gefunden."
         rm -rf "$workdir"
         return 1
     fi
 
-    cp -f "$built" "$out_path" || { log "FEHLER: Konnte gebautes JAR nicht kopieren."; rm -rf "$workdir"; return 1; }
+    cp -f "$built" "$out_path"
     log "ERFOLG: CoreProtect gebaut -> $(basename "$out_path")"
     rm -rf "$workdir"
     return 0
 }
 
-# akzeptiert: "build", "build:master", "build:<andererBranch>" – default master
+# parse_build_directive "build" / "build:master" / "build:<branch>"
 parse_build_directive() {
     local url="$1"
     local branch="master"
-    if [[ "$url" =~ ^build(:([a-zA-Z0-9._/-]+))?$ ]]; then
-        [[ -n "${BASH_REMATCH[2]:-}" ]] && branch="${BASH_REMATCH[2]}"
-        echo "$branch"
-        return 0
+    if [[ "$url" == build ]]; then
+        echo "$branch"; return 0
+    fi
+    if [[ "$url" == build:* ]]; then
+        echo "${url#build:}"; return 0
     fi
     return 1
 }
 
-# ============ Update-Logik (mit Auswahl bei Fehlschlägen) ============
+# ------------------------ Plugin-Update (mit Fehler-Menü) ------------------------
 
 update_plugins() {
     log "Aktualisiere Plugins..."
@@ -333,7 +321,7 @@ update_plugins() {
 # Format: <Plugin-Name> <Download-URL oder build[:branch]>
 
 # Aktive Zeile: CoreProtect aus master bauen (inkl. plugin.yml Patch auf `branch: developement`)
-#CoreProtect build:master
+CoreProtect build:master
 
 # Beispiele (deaktiviert):
 # ViaVersion https://github.com/ViaVersion/ViaVersion
@@ -342,7 +330,7 @@ update_plugins() {
 # floodgate-spigot https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
 EOL
         log "Vorlage erstellt: $PLUGIN_CONFIG"
-        # kein return – wir laufen direkt weiter und verarbeiten CoreProtect
+        # Kein return: wir laufen direkt weiter und verarbeiten CoreProtect
     fi
 
     local temp_dir="${PLUGIN_DIR}_temp"
@@ -351,19 +339,18 @@ EOL
     local -a ok_list=()
     local -a fail_list=()
 
-    while IFS= read -r line || [[ -n "$line" ]]; do
+    while IFS= read -r line || [[ -n "${line:-}" ]]; do
         [[ "$line" =~ ^#.*$ || -z "${line// }" ]] && continue
 
-        local plugin_name plugin_url
+        local plugin_name plugin_url target build_branch owner_repo asset_url
         plugin_name=$(echo "$line" | awk '{$NF=""; sub(/[ \t]+$/, ""); print}')
         plugin_url=$(echo "$line" | awk '{print $NF}')
-        [[ -z "$plugin_name" || -z "$plugin_url" ]] && continue
+        [[ -z "${plugin_name:-}" || -z "${plugin_url:-}" ]] && continue
 
         log "Verarbeite: $plugin_name (${plugin_url})"
-        local target="${temp_dir}/${plugin_name}.jar"
+        target="${temp_dir}/${plugin_name}.jar"
 
-        # --- CoreProtect: Source-Build ---
-        local build_branch
+        # CoreProtect: aus Source bauen
         if [[ "${plugin_name,,}" == "coreprotect" ]] && build_branch="$(parse_build_directive "$plugin_url")"; then
             if build_coreprotect_from_source "$build_branch" "$target"; then
                 ok_list+=("$plugin_name")
@@ -373,14 +360,12 @@ EOL
             continue
         fi
 
-        # --- GitHub-Release oder Fremdseite ---
-                if [[ "$plugin_url" == *"github.com"* ]]; then
-            local owner_repo=""
+        # GitHub Repo oder direkter Link?
+        if [[ "$plugin_url" == *"github.com"* ]]; then
             if owner_repo="$(normalize_github_owner_repo "$plugin_url")"; then
-                log "GitHub erkannt: URL='$plugin_url' -> owner_repo='${owner_repo}'"
-                local asset_url
-                asset_url="$(github_latest_jar_url "$owner_repo")" || asset_url=""
-                if [[ -n "$asset_url" ]]; then
+                log "GitHub erkannt: owner_repo='${owner_repo}'"
+                asset_url="$(github_latest_jar_url "$owner_repo" || true)"
+                if [[ -n "${asset_url:-}" ]]; then
                     if download_file "$asset_url" "$target"; then
                         log "ERFOLG: $plugin_name (GitHub API)"
                         ok_list+=("$plugin_name")
@@ -393,7 +378,7 @@ EOL
                     fail_list+=("$plugin_name")
                 fi
             else
-                log "WARNUNG: Konnte owner/repo aus URL NICHT ermitteln, versuche direkten Download: $plugin_url"
+                log "WARNUNG: owner/repo nicht ermittelbar, versuche direkten Download."
                 if download_file "$plugin_url" "$target"; then
                     log "ERFOLG: $plugin_name (direkter GitHub-Link)"
                     ok_list+=("$plugin_name")
@@ -403,6 +388,7 @@ EOL
                 fi
             fi
         else
+            # Fremdseite (z. B. Geyser/Floodgate)
             if download_file "$plugin_url" "$target"; then
                 log "ERFOLG: $plugin_name (Direktlink)"
                 ok_list+=("$plugin_name")
@@ -413,14 +399,13 @@ EOL
         fi
     done < "$PLUGIN_CONFIG"
 
-    # Manuelle Plugins übernehmen (falls vorhanden)
+    # Manuelle Plugins einbeziehen
     if [[ -d "${PLUGIN_DIR}/manuell" ]]; then
         log "Kopiere manuelle Plugins..."
-        find "${PLUGIN_DIR}/manuell" -maxdepth 1 -type f -name "*.jar" \
-            -exec cp -v -n {} "$temp_dir/" \; | tee -a "$LOG_FILE"
+        find "${PLUGIN_DIR}/manuell" -maxdepth 1 -type f -name "*.jar" -exec cp -v -n {} "$temp_dir/" \; | tee -a "$LOG_FILE"
     fi
 
-    # Auswahl bei Fehlern
+    # Auswertung & Auswahl bei Fehlern
     if (( ${#fail_list[@]} > 0 )); then
         echo "---------------------------------------------"
         echo "Folgende Plugins konnten NICHT geladen/gebaut werden:"
@@ -430,7 +415,7 @@ EOL
         echo "  1) Abbrechen (keine Änderungen an Plugins)"
         echo "  2) Weiter: Server OHNE die fehlgeschlagenen Plugins starten (alte Plugins werden ersetzt)"
         echo "  3) Weiter: ALTE Plugins behalten und NUR neue erfolgreiche drüberkopieren"
-        read -p "Ihre Wahl [1/2/3]: " choice
+        read -r -p "Ihre Wahl [1/2/3]: " choice
 
         case "$choice" in
             2)
@@ -461,20 +446,25 @@ EOL
     return 0
 }
 
+# ------------------------ Backup/Restore & Docker Run ------------------------
+
 restore_backup() {
     log "Verfügbare Backups:"
     mapfile -t backups < <(find "$BACKUP_DIR" -type f -name "*.tar.gz" | sort -r)
     for i in "${!backups[@]}"; do
+        local bname bdate
         bname=$(basename "${backups[$i]}")
         bdate=$(echo "$bname" | grep -o '[0-9]\{12\}')
-        age_days=$(( ( $(date +%s) - $(date -d "${bdate:0:4}-${bdate:4:2}-${bdate:6:2} ${bdate:8:2}:${bdate:10:2}" +%s) ) / 86400 ))
+        local ts
+        ts=$(date -d "${bdate:0:4}-${bdate:4:2}-${bdate:6:2} ${bdate:8:2}:${bdate:10:2}" +%s 2>/dev/null || echo 0)
+        local age_days=$(( ( $(date +%s) - ts ) / 86400 ))
         echo "$((i+1)). $bname (${age_days} Tage alt)"
     done
     echo "0. Abbrechen"
-    read -p "Backup Nummer auswählen: " choice
-    ((choice == 0)) && log "Wiederherstellung abgebrochen." && return
-    index=$((choice - 1))
-    [[ -z "${backups[$index]}" ]] && log "Ungültige Auswahl." && return
+    read -r -p "Backup Nummer auswählen: " choice
+    (( choice == 0 )) && log "Wiederherstellung abgebrochen." && return
+    local index=$((choice - 1))
+    [[ -z "${backups[$index]:-}" ]] && log "Ungültige Auswahl." && return
     stop_server
     log "Stelle Backup wieder her: ${backups[$index]}"
     rm -rf "$DATA_DIR/world"* "$PLUGIN_DIR"/*
@@ -483,12 +473,10 @@ restore_backup() {
 }
 
 update_docker() {
-    stop_server || return 1
+    stop_server || true
     log "Entferne alten Docker-Container..."
-    docker rm "$SERVER_NAME" || {
-        log "Fehler: Konnte Docker-Container nicht entfernen." >&2
-        return 1
-    }
+    docker rm "$SERVER_NAME" >/dev/null 2>&1 || true
+
     log "Starte neuen Docker-Container..."
     local docker_args=(
         -d -p 25565:25565 -p 19132:19132/udp
@@ -500,20 +488,23 @@ update_docker() {
         -e TYPE="$TYPE"
         --restart always
     )
-    [[ -n "$VERSION" ]] && docker_args+=(-e "VERSION=$VERSION")
-    docker run "${docker_args[@]}" "$DOCKER_IMAGE" || {
+    [[ -n "${VERSION:-}" ]] && docker_args+=(-e "VERSION=$VERSION")
+
+    if ! docker run "${docker_args[@]}" "$DOCKER_IMAGE"; then
         log "Fehler: Neuer Docker-Container konnte nicht gestartet werden." >&2
         return 1
-    }
+    fi
     log "Neuer Docker-Container gestartet."
 }
+
+# ------------------------ History-Management ------------------------
 
 manage_history() {
     echo "=== History Management ==="
     echo "1. History anzeigen"
     echo "2. History löschen"
     echo "3. Zurück zum Hauptmenü"
-    read -p "Wählen Sie eine Option: " choice
+    read -r -p "Wählen Sie eine Option: " choice
     case "$choice" in
         1)
             if [[ -f "$HISTORY_FILE" ]]; then
@@ -534,25 +525,27 @@ manage_history() {
         3) return ;;
         *) echo "Ungültige Auswahl." ;;
     esac
-    read -p "Drücken Sie Enter um fortzufahren..."
+    read -r -p "Drücken Sie Enter um fortzufahren..." _
+    return 0
 }
+
+# ------------------------ Main ------------------------
 
 main() {
     shopt -s nocasematch
     log "Starte Update-Prozess..."
     check_dependencies
 
-    if [[ "$1" == "--history" ]]; then manage_history; exit 0; fi
+    if [[ "${1:-}" == "--history" ]]; then manage_history; exit 0; fi
 
     DO_INIT=$(read_yesno_with_history "Soll ein neuer Server initialisiert werden?" "DO_INIT")
     if [[ "$DO_INIT" == "ja" ]]; then
         echo "ACHTUNG: Dies wird ALLE Daten löschen..." >&2
-        read -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
-        if [[ "$CONFIRM_INIT" =~ ^(ja|j|yes|y)$ ]]; then
+        read -r -p "Möchten Sie wirklich fortfahren? (ja/nein): " CONFIRM_INIT
+        if [[ "${CONFIRM_INIT,,}" =~ ^(ja|j|yes|y)$ ]]; then
             log "Erstelle vor der Initialisierung ein Backup..."
             create_backup || { log "Backup fehlgeschlagen. Abbruch."; exit 1; }
             initialize_new_server
-            ASK_PLUGINS="nein"
         else
             log "Initialisierung abgebrochen."
             exit 0
@@ -588,15 +581,16 @@ main() {
     if [[ "$DO_START_DOCKER" == "ja" ]]; then
         update_docker
     else
+        # Container einmal neu erzeugen (run) und gleich wieder stoppen – bleibt konsistent
         update_docker
         log "Stoppe den Docker-Container sofort wieder..."
-        docker stop "$SERVER_NAME"
+        docker stop "$SERVER_NAME" >/dev/null 2>&1 || true
     fi
 
     log "Update-Prozess abgeschlossen."
 }
 
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     echo "Minecraft Server Management Script"
     echo "Verwendung: $0 [Option]"
     echo ""
