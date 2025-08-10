@@ -9,16 +9,12 @@ HISTORY_FILE="${HOME}/.minecraft_script_history"
 save_history() {
     local key="$1"
     local value="$2"
-    
     # Erstelle History-Datei wenn sie nicht existiert
     touch "$HISTORY_FILE"
-    
     # Entferne alte Einträge für diesen Key
     grep -v "^${key}=" "$HISTORY_FILE" > "${HISTORY_FILE}.tmp" 2>/dev/null || true
-    
     # Füge neuen Eintrag hinzu
     echo "${key}=${value}" >> "${HISTORY_FILE}.tmp"
-    
     # Ersetze alte Datei
     mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
 }
@@ -26,7 +22,6 @@ save_history() {
 # Funktion zum Laden der History
 load_history() {
     local key="$1"
-    
     if [[ -f "$HISTORY_FILE" ]]; then
         grep "^${key}=" "$HISTORY_FILE" | cut -d'=' -f2- | tail -1
     fi
@@ -38,15 +33,13 @@ read_with_history() {
     local default="$2"
     local history_key="$3"
     local user_input
-    
     # Lade letzten Wert aus History
-    local last_value=$(load_history "$history_key")
-    
+    local last_value
+    last_value=$(load_history "$history_key")
     # Erstelle Prompt mit History-Vorschlag
     if [[ -n "$last_value" && "$last_value" != "$default" ]]; then
         printf "%s [Letzte Eingabe: %s] (Standard: %s): " "$prompt" "$last_value" "$default" >&2
         read user_input
-        
         # Wenn leer, nutze letzten Wert
         if [[ -z "$user_input" ]]; then
             user_input="$last_value"
@@ -55,17 +48,14 @@ read_with_history() {
         printf "%s (Standard: %s): " "$prompt" "$default" >&2
         read user_input
     fi
-    
     # Wenn immer noch leer, nutze Standard
     if [[ -z "$user_input" ]]; then
         user_input="$default"
     fi
-    
     # Speichere in History (nur wenn nicht Standard)
     if [[ "$user_input" != "$default" ]]; then
         save_history "$history_key" "$user_input"
     fi
-    
     echo "$user_input"
 }
 
@@ -74,15 +64,13 @@ read_yesno_with_history() {
     local prompt="$1"
     local history_key="$2"
     local user_input
-    
     # Lade letzten Wert aus History
-    local last_value=$(load_history "$history_key")
-    
+    local last_value
+    last_value=$(load_history "$history_key")
     # Erstelle Prompt mit History-Vorschlag
     if [[ -n "$last_value" ]]; then
         printf "%s [Letzte Eingabe: %s] (ja/nein): " "$prompt" "$last_value" >&2
         read user_input
-        
         # Wenn leer, nutze letzten Wert
         if [[ -z "$user_input" ]]; then
             user_input="$last_value"
@@ -91,23 +79,14 @@ read_yesno_with_history() {
         printf "%s (ja/nein): " "$prompt" >&2
         read user_input
     fi
-    
     # Normalisiere Eingabe
     case "$user_input" in
-        [jJyY]|[jJ][aA]|[yY][eE][sS])
-            user_input="ja"
-            ;;
-        [nN]|[nN][eE][iI][nN]|[nN][oO])
-            user_input="nein"
-            ;;
-        *)
-            user_input="nein"
-            ;;
+        [jJyY]|[jJ][aA]|[yY][eE][sS]) user_input="ja" ;;
+        [nN]|[nN][eE][iI][nN]|[nN][oO]) user_input="nein" ;;
+        *) user_input="nein" ;;
     esac
-    
     # Speichere in History
     save_history "$history_key" "$user_input"
-    
     echo "$user_input"
 }
 
@@ -179,19 +158,22 @@ create_backup() {
     local backup_name="backup_$(date +%Y%m%d%H%M)"
     local backup_file="$BACKUP_DIR/$backup_name.tar.gz"
     log "Starte Backup nach $backup_file..."
-    local start_time=$(date +%s)
+    local start_time
+    start_time=$(date +%s)
     tar --exclude="./backups" -czf "$backup_file" -C "$DATA_DIR" . &
     local pid=$!
     while kill -0 $pid 2> /dev/null; do
         sleep 5
-        local current_size=$(du -sh "$backup_file" 2>/dev/null | awk '{print $1}')
+        local current_size
+        current_size=$(du -sh "$backup_file" 2>/dev/null | awk '{print $1}')
         local elapsed_time=$(( $(date +%s) - start_time ))
         local elapsed_minutes=$((elapsed_time / 60))
         local elapsed_seconds=$((elapsed_time % 60))
         log "Backup läuft: Größe=$current_size, verstrichene Zeit=${elapsed_minutes}m ${elapsed_seconds}s"
     done
     if wait $pid; then
-        local final_size=$(du -sh "$backup_file" | awk '{print $1}')
+        local final_size
+        final_size=$(du -sh "$backup_file" | awk '{print $1}')
         local total_time=$(( $(date +%s) - start_time ))
         local total_minutes=$((total_time / 60))
         local total_seconds=$((total_time % 60))
@@ -212,78 +194,182 @@ delete_and_backup_plugins() {
     log "Alte Plugins wurden gesichert."
 }
 
+# ============ NEU: Robuste Downloader-Helfer (GitHub + Fremdseiten) ============
+
+# Normalisiert GitHub-URLs auf owner/repo und liefert "owner/repo" oder leer
+normalize_github_owner_repo() {
+    local url="$1"
+    # Unterstützt: https://github.com/Owner/Repo[/...]
+    if [[ "$url" =~ github\.com/([^/]+)/([^/]+) ]]; then
+        local owner="${BASH_REMATCH[1]}"
+        local repo="${BASH_REMATCH[2]}"
+        repo="${repo%.git}"
+        echo "${owner}/${repo}"
+        return 0
+    fi
+    return 1
+}
+
+# Holt die neueste .jar-Asset-URL aus der GitHub API; bevorzugt spigot/paper, sonst erste .jar
+github_latest_jar_url() {
+    local owner_repo="$1"
+    local api_url="https://api.github.com/repos/${owner_repo}/releases/latest"
+
+    # Optional: GitHub Token verwenden (Rate-Limit umgehen)
+    local auth_args=()
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
+
+    local resp
+    resp=$(curl -sfL -H "Accept: application/vnd.github+json" "${auth_args[@]}" "$api_url") || return 1
+
+    local url
+    url=$(echo "$resp" | jq -r '.assets[] | select(.name|test("(?i)(spigot|paper).+\\.jar$")) | .browser_download_url' | head -1)
+    if [[ -z "$url" || "$url" == "null" ]]; then
+        url=$(echo "$resp" | jq -r '.assets[] | select(.name|test("\\.jar$")) | .browser_download_url' | head -1)
+    fi
+    [[ -n "$url" && "$url" != "null" ]] && echo "$url"
+}
+
+# Allzweck-Download mit Redirect-Follow, Retry und Browser-User-Agent
+download_file() {
+    # usage: download_file <url> <output_path>
+    local url="$1"
+    local out="$2"
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 \
+         -A "Mozilla/5.0" -o "$out" "$url"
+}
+
+# ============ ERSETZT: update_plugins (mit Auswahl bei Fehlschlägen) ============
+
 update_plugins() {
     log "Aktualisiere Plugins..."
     mkdir -p "$PLUGIN_DIR"
 
     if [[ ! -f "$PLUGIN_CONFIG" ]]; then
-        log "Fehler: plugins.txt nicht gefunden! Erstelle Vorlage."
-        cat <<EOL > "$PLUGIN_CONFIG"
+        log "plugins.txt nicht gefunden – erstelle Vorlage mit Mindest-Plugins."
+        cat <<'EOL' > "$PLUGIN_CONFIG"
 # Format: <Plugin-Name> <Download-URL>
-# Beispiel:
-# ViaVersion https://github.com/ViaVersion/ViaVersion/releases/latest
+# Du kannst GH-Repo-Links nackt angeben – die neueste Release-JAR wird automatisch gefunden.
+# Mindest-Plugins (Beispiele):
+ViaVersion https://github.com/ViaVersion/ViaVersion
+ViaBackwards https://github.com/ViaVersion/ViaBackwards
+Geyser-Spigot https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot
+floodgate-spigot https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
 EOL
+        log "Vorlage erstellt: $PLUGIN_CONFIG"
         return 1
     fi
 
     local temp_dir="${PLUGIN_DIR}_temp"
     rm -rf "$temp_dir" && mkdir -p "$temp_dir"
 
-    handle_download_error() {
-        log "FEHLER: $1"
-        log "URL: $2"
-        log "Versuchter Speicherort: $3"
-        log "Versuche direkten Download ohne GitHub API..."
-        wget --tries=3 --timeout=30 -q -O "$3" "$2" || {
-            log "SCHWERER FEHLER: Download gescheitert für $1"
-            return 1
-        }
-    }
+    local -a ok_list=()
+    local -a fail_list=()
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" =~ ^#.*$ || -z "${line// }" ]] && continue
+
+        # "Plugin-Name URL" (Name = alles bis zum letzten Feld)
+        local plugin_name plugin_url
         plugin_name=$(echo "$line" | awk '{$NF=""; sub(/[ \t]+$/, ""); print}')
         plugin_url=$(echo "$line" | awk '{print $NF}')
+        [[ -z "$plugin_name" || -z "$plugin_url" ]] && continue
+
         log "Verarbeite: $plugin_name (${plugin_url})"
+        local target="${temp_dir}/${plugin_name}.jar"
 
         if [[ "$plugin_url" == *"github.com"* ]]; then
-            owner_repo=$(echo "$plugin_url" | awk -F'/' '{i=NF; while($i != "releases" && i>0) i--; print $(i-2)"/"$(i-1)}')
-            [[ -z "$owner_repo" ]] && continue
-            api_response=$(curl -sfL "https://api.github.com/repos/$owner_repo/releases/latest") || {
-                log "GitHub API Fehler für $owner_repo"
-                handle_download_error "$plugin_name" "$plugin_url" "${temp_dir}/${plugin_name}.jar"
-                continue
-            }
-            asset_url=$(echo "$api_response" | jq -r '.assets[] | select(.name | test(".*.jar$")) | .browser_download_url' | head -1)
-            if [[ -z "$asset_url" ]]; then
-                log "Keine .jar-Datei im GitHub-Release gefunden."
-                handle_download_error "$plugin_name" "$plugin_url" "${temp_dir}/${plugin_name}.jar"
-                continue
+            # Erkenne owner/repo auch bei nackter Repo-URL
+            local owner_repo
+            owner_repo=$(normalize_github_owner_repo "$plugin_url") || owner_repo=""
+            if [[ -n "$owner_repo" ]]; then
+                local asset_url
+                asset_url=$(github_latest_jar_url "$owner_repo") || asset_url=""
+                if [[ -n "$asset_url" ]]; then
+                    if download_file "$asset_url" "$target"; then
+                        log "ERFOLG: $plugin_name (GitHub API)"
+                        ok_list+=("$plugin_name")
+                    else
+                        log "FEHLER: Download via GitHub API fehlgeschlagen für $plugin_name"
+                        fail_list+=("$plugin_name")
+                    fi
+                else
+                    log "FEHLER: Keine .jar in neuester Release gefunden für $plugin_name ($owner_repo)"
+                    fail_list+=("$plugin_name")
+                fi
+            else
+                # Fallback: direkter Versuch (z. B. wenn URL schon ein Asset ist)
+                if download_file "$plugin_url" "$target"; then
+                    log "ERFOLG: $plugin_name (direkter GitHub-Link)"
+                    ok_list+=("$plugin_name")
+                else
+                    log "FEHLER: Direkter GitHub-Download fehlgeschlagen für $plugin_name"
+                    fail_list+=("$plugin_name")
+                fi
             fi
-            wget --tries=3 --timeout=30 -q -O "${temp_dir}/${plugin_name}.jar" "$asset_url" || {
-                handle_download_error "$plugin_name" "$plugin_url" "${temp_dir}/${plugin_name}.jar"
-                continue
-            }
+
         else
-            wget --tries=3 --timeout=30 -q -O "${temp_dir}/${plugin_name}.jar" "$plugin_url" || {
-                handle_download_error "$plugin_name" "$plugin_url" "${temp_dir}/${plugin_name}.jar"
-                continue
-            }
+            # Fremdseite: direkter Download mit Redirect-Follow
+            if download_file "$plugin_url" "$target"; then
+                log "ERFOLG: $plugin_name (Direktlink)"
+                ok_list+=("$plugin_name")
+            else
+                log "FEHLER: Download fehlgeschlagen für $plugin_name"
+                fail_list+=("$plugin_name")
+            fi
         fi
-        log "ERFOLG: $plugin_name heruntergeladen"
+
     done < "$PLUGIN_CONFIG"
 
-    [[ -d "${PLUGIN_DIR}/manuell" ]] && {
+    # Manuelle Plugins übernehmen (falls vorhanden)
+    if [[ -d "${PLUGIN_DIR}/manuell" ]]; then
         log "Kopiere manuelle Plugins..."
-        find "${PLUGIN_DIR}/manuell" -maxdepth 1 -name "*.jar" -exec cp -v -n {} "$temp_dir/" \; | tee -a "$LOG_FILE"
-    }
+        find "${PLUGIN_DIR}/manuell" -maxdepth 1 -type f -name "*.jar" \
+            -exec cp -v -n {} "$temp_dir/" \; | tee -a "$LOG_FILE"
+    fi
 
-    log "Entferne alte Plugins..."
-    find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -delete
-    log "Kopiere neue Plugins..."
-    cp -v "$temp_dir"/*.jar "$PLUGIN_DIR/" | tee -a "$LOG_FILE"
+    # Auswertung & Auswahl bei Fehlern
+    if (( ${#fail_list[@]} > 0 )); then
+        echo "---------------------------------------------"
+        echo "Folgende Plugins konnten NICHT geladen werden:"
+        for p in "${fail_list[@]}"; do echo "  - $p"; done
+        echo "---------------------------------------------"
+        echo "Wählen Sie, wie fortgefahren werden soll:"
+        echo "  1) Abbrechen (keine Änderungen an Plugins)"
+        echo "  2) Weiter: Server OHNE die fehlgeschlagenen Plugins starten (alte Plugins werden ersetzt)"
+        echo "  3) Weiter: ALTE Plugins behalten und NUR neue erfolgreiche drüberkopieren"
+        read -p "Ihre Wahl [1/2/3]: " choice
+
+        case "$choice" in
+            2)
+                log "Entferne alte Plugins und setze NUR erfolgreich geladene..."
+                find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -delete
+                find "$temp_dir" -maxdepth 1 -type f -name "*.jar" -exec cp -v {} "$PLUGIN_DIR/" \; | tee -a "$LOG_FILE"
+                log "Plugin-Update abgeschlossen (ohne fehlgeschlagene)."
+                ;;
+            3)
+                log "Behalte alte Plugins und kopiere NUR erfolgreich geladene drüber..."
+                find "$temp_dir" -maxdepth 1 -type f -name "*.jar" -exec cp -v {} "$PLUGIN_DIR/" \; | tee -a "$LOG_FILE"
+                log "Plugin-Update abgeschlossen (Overlay)."
+                ;;
+            *)
+                log "Abgebrochen: Es wurden KEINE Änderungen an den Plugins vorgenommen."
+                rm -rf "$temp_dir"
+                return 2
+                ;;
+        esac
+    else
+        # Keine Fehler – Standardverhalten: ersetzen
+        log "Alle Plugins erfolgreich geladen. Ersetze alte Plugins..."
+        find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -delete
+        cp -v "$temp_dir"/*.jar "$PLUGIN_DIR/" | tee -a "$LOG_FILE"
+        log "Plugin-Update komplett."
+    fi
+
     rm -rf "$temp_dir"
-    log "Plugin-Update komplett"
+    return 0
 }
 
 restore_backup() {
@@ -340,7 +426,6 @@ manage_history() {
     echo "2. History löschen"
     echo "3. Zurück zum Hauptmenü"
     read -p "Wählen Sie eine Option: " choice
-    
     case "$choice" in
         1)
             if [[ -f "$HISTORY_FILE" ]]; then
@@ -358,14 +443,9 @@ manage_history() {
                 echo "Keine History vorhanden."
             fi
             ;;
-        3)
-            return
-            ;;
-        *)
-            echo "Ungültige Auswahl."
-            ;;
+        3) return ;;
+        *) echo "Ungültige Auswahl." ;;
     esac
-    
     read -p "Drücken Sie Enter um fortzufahren..."
 }
 
@@ -393,9 +473,9 @@ main() {
         fi
     fi
 
-    VERSION=$(read_with_history "Welche Minecraft-Version..." "LATEST" "VERSION")
-    MEMORY=$(read_with_history "Wieviel RAM..." "6G" "MEMORY")
-    TYPE=$(read_with_history "Welcher Server-Typ..." "PAPER" "TYPE")
+    VERSION=$(read_with_history "Welche Minecraft-Version (z. B. LATEST, 1.21.1, PAPER Build etc.)?" "LATEST" "VERSION")
+    MEMORY=$(read_with_history "Wieviel RAM (z. B. 6G, 8G)?" "6G" "MEMORY")
+    TYPE=$(read_with_history "Welcher Server-Typ (PAPER, SPIGOT, VANILLA, ... )?" "PAPER" "TYPE")
 
     DO_BACKUP=$(read_yesno_with_history "Soll ein Backup erstellt werden?" "DO_BACKUP")
     DO_RESTORE=$(read_yesno_with_history "Soll ein Backup wiederhergestellt werden?" "DO_RESTORE")
