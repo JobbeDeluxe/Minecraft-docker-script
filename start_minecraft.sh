@@ -253,10 +253,10 @@ update_plugins() {
 # Format: <Plugin-Name> <Download-URL>
 # Du kannst GH-Repo-Links nackt angeben – die neueste Release-JAR wird automatisch gefunden.
 # Mindest-Plugins (Beispiele):
-ViaVersion https://github.com/ViaVersion/ViaVersion
-ViaBackwards https://github.com/ViaVersion/ViaBackwards
-Geyser-Spigot https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot
-floodgate-spigot https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
+# ViaVersion https://github.com/ViaVersion/ViaVersion
+# ViaBackwards https://github.com/ViaVersion/ViaBackwards
+# Geyser-Spigot https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot
+# floodgate-spigot https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
 EOL
         log "Vorlage erstellt: $PLUGIN_CONFIG"
         return 1
