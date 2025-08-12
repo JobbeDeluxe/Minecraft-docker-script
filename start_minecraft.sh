@@ -230,6 +230,25 @@ download_file() {
     curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -A "Mozilla/5.0" -o "$out" "$url"
 }
 
+# ------------------------ Spigot → Spiget (LATEST Download) ------------------------
+
+# Resource-ID aus Spigot-URL ziehen: https://www.spigotmc.org/resources/<slug>.<ID>/
+extract_spigot_resource_id() {
+  local url="$1"
+  url="${url#http://}"; url="${url#https://}"; url="${url#www.}"
+  if [[ "$url" =~ ^spigotmc\.org/resources/[^/]*\.([0-9]+)(/.*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+# Spiget liefert 302 auf die JAR der neuesten Version – perfekt für Updates
+spiget_latest_download_url() {
+  local id="$1"
+  echo "https://api.spiget.org/v2/resources/${id}/download"
+}
+
 # ------------------------ CoreProtect Build (master + plugin.yml Patch) ------------------------
 
 # build_coreprotect_from_source <branch> <out_jar_path>
@@ -262,7 +281,6 @@ build_coreprotect_from_source() {
         sed -i 's/branch:[[:space:]]*\${project\.branch}/branch: developement/' "$plugin_yml"
         log "CoreProtect: plugin.yml angepasst (branch -> developement)."
     else
-        # Fallback: vorhandene branch-Zeile überschreiben oder Zeile hinzufügen
         if grep -q '^branch:' "$plugin_yml"; then
             sed -i 's/^branch:[[:space:]].*/branch: developement/' "$plugin_yml"
         else
@@ -316,21 +334,21 @@ update_plugins() {
     mkdir -p "$PLUGIN_DIR"
 
     if [[ ! -f "$PLUGIN_CONFIG" ]]; then
-        log "plugins.txt nicht gefunden – erstelle Vorlage (CoreProtect aktiv, Rest kommentiert)."
+        log "plugins.txt nicht gefunden – erstelle Vorlage (CoreProtect optional, Rest kommentiert)."
         cat <<'EOL' > "$PLUGIN_CONFIG"
 # Format: <Plugin-Name> <Download-URL oder build[:branch]>
 
-# Aktive Zeile: CoreProtect aus master bauen (inkl. plugin.yml Patch auf `branch: developement`)
-# CoreProtect build:master
-
 # Beispiele (deaktiviert):
+# CoreProtect build:master
 # ViaVersion https://github.com/ViaVersion/ViaVersion
 # ViaBackwards https://github.com/ViaVersion/ViaBackwards
 # Geyser-Spigot https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot
 # floodgate-spigot https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
+# OpenAudioMC https://www.spigotmc.org/resources/openaudiomc-proximity-voice-chat-and-music-without-mods.30691/
+# TreeAssist https://www.spigotmc.org/resources/treeassist.67436/
+# GriefPrevention https://dev.bukkit.org/projects/grief-prevention/files/latest
 EOL
         log "Vorlage erstellt: $PLUGIN_CONFIG"
-        # Kein return: wir laufen direkt weiter und verarbeiten CoreProtect
     fi
 
     local temp_dir="${PLUGIN_DIR}_temp"
@@ -360,7 +378,27 @@ EOL
             continue
         fi
 
-        # GitHub Repo oder direkter Link?
+        # --- Spigot-Seite erkannt → über Spiget laden (immer "latest") ---
+        if [[ "$plugin_url" == *"spigotmc.org/resources/"* ]]; then
+            local rid
+            if rid="$(extract_spigot_resource_id "$plugin_url")"; then
+                local surl
+                surl="$(spiget_latest_download_url "$rid")"
+                if download_file "$surl" "$target"; then
+                    log "ERFOLG: $plugin_name (Spigot via Spiget, ID $rid)"
+                    ok_list+=("$plugin_name")
+                else
+                    log "FEHLER: Spiget-Download fehlgeschlagen für $plugin_name (ID $rid)"
+                    fail_list+=("$plugin_name")
+                fi
+                continue
+            else
+                log "WARNUNG: Konnte Resource-ID aus Spigot-URL nicht erkennen: $plugin_url"
+                # fällt durch auf die generische Logik
+            fi
+        fi
+
+        # GitHub Repo?
         if [[ "$plugin_url" == *"github.com"* ]]; then
             if owner_repo="$(normalize_github_owner_repo "$plugin_url")"; then
                 log "GitHub erkannt: owner_repo='${owner_repo}'"
@@ -387,8 +425,9 @@ EOL
                     fail_list+=("$plugin_name")
                 fi
             fi
+
         else
-            # Fremdseite (z. B. Geyser/Floodgate)
+            # Fremdseite (z. B. Geyser/Floodgate) oder direkte Datei
             if download_file "$plugin_url" "$target"; then
                 log "ERFOLG: $plugin_name (Direktlink)"
                 ok_list+=("$plugin_name")
