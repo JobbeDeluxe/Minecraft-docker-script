@@ -249,19 +249,49 @@ spiget_latest_download_url() {
   echo "https://api.spiget.org/v2/resources/${id}/download"
 }
 
-# ------------------------ Modrinth (LATEST Release) ------------------------
+# ------------------------ Modrinth (LATEST mit Channel-Fallback) ------------------------
 
-# usage: modrinth_latest_jar_url <slug>
+# Modrinth: Slug aus Seiten-URL extrahieren (plugin oder project)
+extract_modrinth_slug() {
+  local url="$1"
+  url="${url#http://}"; url="${url#https://}"; url="${url#www.}"
+  if [[ "$url" =~ ^modrinth\.com/(plugin|project)/([A-Za-z0-9._-]+) ]]; then
+    echo "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+# usage: modrinth_latest_jar_url <slug> [channels_csv]
+# Default-Kanäle: release,beta,alpha (überschreibbar via ENV MODRINTH_CHANNELS)
 modrinth_latest_jar_url() {
     local slug="$1"
+    local channels_csv="${2:-${MODRINTH_CHANNELS:-release,beta,alpha}}"
     local resp
     resp="$(curl -sfL "https://api.modrinth.com/v2/project/${slug}/version")" || return 1
-    echo "$resp" | jq -r '
-      .[] | select(.version_type == "release") 
-      | .files[]? 
-      | select(.url | test("\\.jar$")) 
-      | .url
-    ' | head -1
+
+    local IFS=','; read -ra chans <<< "$channels_csv"
+    for chan in "${chans[@]}"; do
+        # bevorzugt Loader: paper/spigot/bukkit/purpur
+        local url
+        url=$(echo "$resp" | jq -r --arg chan "$chan" '
+          .[] | select(.version_type == $chan) |
+          select((.loaders // []) | map(. == "paper" or . == "spigot" or . == "bukkit" or . == "purpur") | any) |
+          .files[]? | select(.url | test("\\.jar$")) | .url
+        ' | head -1)
+        # fallback: irgendeine JAR dieses Channels
+        if [[ -z "${url:-}" ]]; then
+          url=$(echo "$resp" | jq -r --arg chan "$chan" '
+            .[] | select(.version_type == $chan) |
+            .files[]? | select(.url | test("\\.jar$")) | .url
+          ' | head -1)
+        fi
+        if [[ -n "${url:-}" ]]; then
+          echo "$url"
+          return 0
+        fi
+    done
+    return 1
 }
 
 # ------------------------ CoreProtect Build (master + plugin.yml Patch) ------------------------
@@ -355,13 +385,15 @@ update_plugins() {
 # Quellen-Typen:
 #   - GitHub-Repo:          https://github.com/<owner>/<repo>
 #   - Spigot-Seite:         https://www.spigotmc.org/resources/<slug>.<ID>/
-#   - Modrinth:             modrinth:<slug>
+#   - Modrinth:             modrinth:<slug>   ODER   https://modrinth.com/plugin/<slug>
+#     (optional: Kanal festlegen: modrinth:<slug>@beta  bzw. @alpha)
 #   - Direkter Link (.jar): https://...
 #   - CoreProtect Build:    build[:branch]  (z.B. build:master)
 
 # Beispiele:
 # CoreProtect build:master
-# SimpleVoiceChat https://www.spigotmc.org/resources/simple-voice-chat.93738/
+# SimpleVoiceChat https://modrinth.com/plugin/simple-voice-chat
+# VoiceChatDiscordBridge modrinth:simple-voice-chat-discord-bridge
 # DiscordSRV https://www.spigotmc.org/resources/discordsrv.18494/
 # GriefPrevention modrinth:griefprevention
 # ViaVersion https://github.com/ViaVersion/ViaVersion
@@ -399,24 +431,49 @@ EOL
             continue
         fi
 
-        # --- Modrinth: "modrinth:<slug>" ---
+        # --- Modrinth: Schema "modrinth:<slug>" oder "modrinth:<slug>@beta/alpha" ---
         if [[ "$plugin_url" == modrinth:* ]]; then
-            local slug="${plugin_url#modrinth:}"
+            local spec="${plugin_url#modrinth:}"
+            local slug="${spec%@*}"
+            local channels="${spec#*@}"
+            [[ "$channels" == "$slug" ]] && channels=""  # kein @ vorhanden
             local murl
-            murl="$(modrinth_latest_jar_url "$slug")" || murl=""
+            murl="$(modrinth_latest_jar_url "$slug" "${channels}")" || murl=""
             if [[ -n "$murl" ]]; then
                 if download_file "$murl" "$target"; then
-                    log "ERFOLG: $plugin_name (Modrinth)"
+                    log "ERFOLG: $plugin_name (Modrinth${channels:+ @${channels}})"
                     ok_list+=("$plugin_name")
                 else
                     log "FEHLER: Modrinth-Download fehlgeschlagen für $plugin_name"
                     fail_list+=("$plugin_name")
                 fi
             else
-                log "FEHLER: Keine Modrinth-Release gefunden für $plugin_name ($slug)"
+                log "FEHLER: Keine Modrinth-Version gefunden für $plugin_name ($slug)"
                 fail_list+=("$plugin_name")
             fi
             continue
+        fi
+
+        # --- Modrinth: Seiten-URL (einfacher) ---
+        if [[ "$plugin_url" == *"modrinth.com/plugin/"* || "$plugin_url" == *"modrinth.com/project/"* ]]; then
+            local slug
+            if slug="$(extract_modrinth_slug "$plugin_url")"; then
+                local murl
+                murl="$(modrinth_latest_jar_url "$slug")" || murl=""
+                if [[ -n "$murl" ]]; then
+                    if download_file "$murl" "$target"; then
+                        log "ERFOLG: $plugin_name (Modrinth Seite: $slug)"
+                        ok_list+=("$plugin_name")
+                    else
+                        log "FEHLER: Modrinth-Download fehlgeschlagen für $plugin_name (Seite)"
+                        fail_list+=("$plugin_name")
+                    fi
+                else
+                    log "FEHLER: Keine passende Modrinth-Version für $plugin_name (Seite: $slug)"
+                    fail_list+=("$plugin_name")
+                fi
+                continue
+            fi
         fi
 
         # --- Spigot-Seite erkannt → über Spiget laden (immer "latest") ---
@@ -518,7 +575,9 @@ EOL
     else
         log "Alle Plugins erfolgreich geladen/gebaut. Ersetze alte Plugins..."
         find "$PLUGIN_DIR" -maxdepth 1 -name "*.jar" -delete
-        cp -v "$temp_dir"/*.jar "$PLUGIN_DIR/" | tee -a "$LOG_FILE"
+        if compgen -G "${temp_dir}/*.jar" > /dev/null; then
+            cp -v "$temp_dir"/*.jar "$PLUGIN_DIR/" | tee -a "$LOG_FILE"
+        fi
         log "Plugin-Update komplett."
     fi
 
