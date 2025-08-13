@@ -230,6 +230,40 @@ download_file() {
     curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -A "Mozilla/5.0" -o "$out" "$url"
 }
 
+# ------------------------ Spigot → Spiget (LATEST Download) ------------------------
+
+# Resource-ID aus Spigot-URL ziehen: https://www.spigotmc.org/resources/<slug>.<ID>/
+extract_spigot_resource_id() {
+  local url="$1"
+  url="${url#http://}"; url="${url#https://}"; url="${url#www.}"
+  if [[ "$url" =~ ^spigotmc\.org/resources/[^/]*\.([0-9]+)(/.*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+# Spiget liefert 302 auf die JAR der neuesten Version – perfekt für Updates
+spiget_latest_download_url() {
+  local id="$1"
+  echo "https://api.spiget.org/v2/resources/${id}/download"
+}
+
+# ------------------------ Modrinth (LATEST Release) ------------------------
+
+# usage: modrinth_latest_jar_url <slug>
+modrinth_latest_jar_url() {
+    local slug="$1"
+    local resp
+    resp="$(curl -sfL "https://api.modrinth.com/v2/project/${slug}/version")" || return 1
+    echo "$resp" | jq -r '
+      .[] | select(.version_type == "release") 
+      | .files[]? 
+      | select(.url | test("\\.jar$")) 
+      | .url
+    ' | head -1
+}
+
 # ------------------------ CoreProtect Build (master + plugin.yml Patch) ------------------------
 
 # build_coreprotect_from_source <branch> <out_jar_path>
@@ -262,7 +296,6 @@ build_coreprotect_from_source() {
         sed -i 's/branch:[[:space:]]*\${project\.branch}/branch: developement/' "$plugin_yml"
         log "CoreProtect: plugin.yml angepasst (branch -> developement)."
     else
-        # Fallback: vorhandene branch-Zeile überschreiben oder Zeile hinzufügen
         if grep -q '^branch:' "$plugin_yml"; then
             sed -i 's/^branch:[[:space:]].*/branch: developement/' "$plugin_yml"
         else
@@ -316,21 +349,27 @@ update_plugins() {
     mkdir -p "$PLUGIN_DIR"
 
     if [[ ! -f "$PLUGIN_CONFIG" ]]; then
-        log "plugins.txt nicht gefunden – erstelle Vorlage (CoreProtect aktiv, Rest kommentiert)."
+        log "plugins.txt nicht gefunden – erstelle Vorlage (alles kommentiert)."
         cat <<'EOL' > "$PLUGIN_CONFIG"
-# Format: <Plugin-Name> <Download-URL oder build[:branch]>
+# Format: <Plugin-Name> <Quelle>
+# Quellen-Typen:
+#   - GitHub-Repo:          https://github.com/<owner>/<repo>
+#   - Spigot-Seite:         https://www.spigotmc.org/resources/<slug>.<ID>/
+#   - Modrinth:             modrinth:<slug>
+#   - Direkter Link (.jar): https://...
+#   - CoreProtect Build:    build[:branch]  (z.B. build:master)
 
-# Aktive Zeile: CoreProtect aus master bauen (inkl. plugin.yml Patch auf `branch: developement`)
+# Beispiele:
 # CoreProtect build:master
-
-# Beispiele (deaktiviert):
+# SimpleVoiceChat https://www.spigotmc.org/resources/simple-voice-chat.93738/
+# DiscordSRV https://www.spigotmc.org/resources/discordsrv.18494/
+# GriefPrevention modrinth:griefprevention
 # ViaVersion https://github.com/ViaVersion/ViaVersion
 # ViaBackwards https://github.com/ViaVersion/ViaBackwards
 # Geyser-Spigot https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot
 # floodgate-spigot https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot
 EOL
         log "Vorlage erstellt: $PLUGIN_CONFIG"
-        # Kein return: wir laufen direkt weiter und verarbeiten CoreProtect
     fi
 
     local temp_dir="${PLUGIN_DIR}_temp"
@@ -360,7 +399,47 @@ EOL
             continue
         fi
 
-        # GitHub Repo oder direkter Link?
+        # --- Modrinth: "modrinth:<slug>" ---
+        if [[ "$plugin_url" == modrinth:* ]]; then
+            local slug="${plugin_url#modrinth:}"
+            local murl
+            murl="$(modrinth_latest_jar_url "$slug")" || murl=""
+            if [[ -n "$murl" ]]; then
+                if download_file "$murl" "$target"; then
+                    log "ERFOLG: $plugin_name (Modrinth)"
+                    ok_list+=("$plugin_name")
+                else
+                    log "FEHLER: Modrinth-Download fehlgeschlagen für $plugin_name"
+                    fail_list+=("$plugin_name")
+                fi
+            else
+                log "FEHLER: Keine Modrinth-Release gefunden für $plugin_name ($slug)"
+                fail_list+=("$plugin_name")
+            fi
+            continue
+        fi
+
+        # --- Spigot-Seite erkannt → über Spiget laden (immer "latest") ---
+        if [[ "$plugin_url" == *"spigotmc.org/resources/"* ]]; then
+            local rid
+            if rid="$(extract_spigot_resource_id "$plugin_url")"; then
+                local surl
+                surl="$(spiget_latest_download_url "$rid")"
+                if download_file "$surl" "$target"; then
+                    log "ERFOLG: $plugin_name (Spigot via Spiget, ID $rid)"
+                    ok_list+=("$plugin_name")
+                else
+                    log "FEHLER: Spiget-Download fehlgeschlagen für $plugin_name (ID $rid)"
+                    fail_list+=("$plugin_name")
+                fi
+                continue
+            else
+                log "WARNUNG: Konnte Resource-ID aus Spigot-URL nicht erkennen: $plugin_url"
+                # fällt durch auf die generische Logik
+            fi
+        fi
+
+        # GitHub Repo?
         if [[ "$plugin_url" == *"github.com"* ]]; then
             if owner_repo="$(normalize_github_owner_repo "$plugin_url")"; then
                 log "GitHub erkannt: owner_repo='${owner_repo}'"
@@ -387,8 +466,9 @@ EOL
                     fail_list+=("$plugin_name")
                 fi
             fi
+
         else
-            # Fremdseite (z. B. Geyser/Floodgate)
+            # Fremdseite (z. B. Geyser/Floodgate) oder direkte Datei
             if download_file "$plugin_url" "$target"; then
                 log "ERFOLG: $plugin_name (Direktlink)"
                 ok_list+=("$plugin_name")
@@ -479,7 +559,10 @@ update_docker() {
 
     log "Starte neuen Docker-Container..."
     local docker_args=(
-        -d -p 25565:25565 -p 19132:19132/udp
+        -d
+        -p 25565:25565
+        -p 19132:19132/udp
+        -p 24454:24454/udp   # Simple Voice Chat UDP-Port
         -v "${DATA_DIR}:/data"
         --name "$SERVER_NAME"
         -e TZ=Europe/Berlin
